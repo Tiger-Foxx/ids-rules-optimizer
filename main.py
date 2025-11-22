@@ -1,6 +1,7 @@
 import os
 import argparse
 from src.content_engine import ContentEngine
+from src.exporter import Exporter
 from src.parser import SnortParser
 from src.cleaner import RuleCleaner
 from src.ip_engine import IPEngine
@@ -93,6 +94,23 @@ def main():
     print("="*50)
     
     print("\n>>> Prêt pour la PHASE 5 : EXPORT (C++)")
+    
+    # 5. Phase 5 : Exportation
+    print("\n>>> PHASE 5 : EXPORTATION (C++)")
+    
+    # On définit le dossier de sortie
+    # On utilise OUTPUT_DIR défini en haut du fichier main.py
+    exporter = Exporter(OUTPUT_DIR)
+    
+    # On exporte les règles finales
+    # fw_rules = Règles pures (Phase 3)
+    # final_inspection_rules = Règles patterns optimisées (Phase 4)
+    exporter.export_all(fw_rules, final_inspection_rules)
+    
+    print("\n" + "="*50)
+    print("✅ SUCCÈS : PRÉTRAITEMENT TERMINÉ")
+    print(f"Artefacts disponibles dans : {OUTPUT_DIR}")
+    print("="*50)
 
 if __name__ == "__main__":
     main()
