@@ -1,4 +1,4 @@
-# 📘 MASTERPLAN : OPTIMISATION DU FILTRAGE RÉSEAU PAR AGRÉGATION STRUCTURELLE
+# OPTIMISATION DU FILTRAGE RÉSEAU PAR AGRÉGATION STRUCTURELLE
 
 **Type de projet :** Recherche Scientifique / Preuve de Concept (PoC)  
 **Objectif :** Maximisation du débit et réduction de latence dans les chaînes de sécurité.  

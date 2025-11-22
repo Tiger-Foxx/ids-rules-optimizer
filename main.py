@@ -1,7 +1,8 @@
 import os
 import argparse
+from src.parser import SnortParser
 from src.cleaner import RuleCleaner
-
+from src.ip_engine import IPEngine
 # Configuration des chemins
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_DIR = os.path.join(BASE_DIR, 'inputs')
@@ -24,8 +25,45 @@ def main():
     print(">>> PHASE 1 : NETTOYAGE & FILTRAGE")
     cleaner = RuleCleaner()
     cleaner.process_file(input_file, clean_file)
+    
 
     print("\n>>> Prêt pour la PHASE 2 : Parsing & Modélisation")
+    
+    print("\n>>> PHASE 2 : PARSING & MODÉLISATION")
+    parser = SnortParser()
+    rules_objects = parser.parse_file(clean_file)
+    
+    print(f"Règles parsées avec succès : {len(rules_objects)}")
+    # Vérification sur une règle complexe (ex: sid 144)
+    for r in rules_objects:
+        if r.id == 144:
+            print(f"\n[DEBUG] Règle SID 144 parsée :")
+            print(f"  Proto: {r.proto}")
+            print(f"  Dst Port: {r.dst_ports}")
+            print(f"  Flow: {r.direction}, Established={r.established}")
+            print(f"  Patterns: {len(r.patterns)}")
+            for p in r.patterns:
+                type_p = "PCRE" if p.is_regex else "CONTENT"
+                print(f"    - {type_p}: {p.string_val}")
+            break
+    
+    # 4. Phase 3 : Optimisation Géométrique
+    print("\n>>> PHASE 3 : OPTIMISATION GÉOMÉTRIQUE (IP/Ports)")
+    ip_opt = IPEngine()
+    fw_rules, deep_rules = ip_opt.optimize(rules_objects)
+    
+    # Calcul du gain
+    total_before = len(rules_objects)
+    total_after = len(fw_rules) + len(deep_rules)
+    reduction = total_before - total_after
+    
+    print(f"Règles Firewall Pures (-> iptables) : {len(fw_rules)}")
+    print(f"Règles Inspection (-> Hyperscan)    : {len(deep_rules)}")
+    print(f"------------------------------------------------")
+    print(f"Règles Totales après fusion IP      : {total_after}")
+    print(f"Réduction initiale                  : -{reduction} règles (Doublons/Merges)")
+
+    print("\n>>> Prêt pour la PHASE 4 : Fusion Sémantique (Patterns)")
 
 if __name__ == "__main__":
     main()
