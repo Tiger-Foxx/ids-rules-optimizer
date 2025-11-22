@@ -1,5 +1,6 @@
 import os
 import argparse
+from src.content_engine import ContentEngine
 from src.parser import SnortParser
 from src.cleaner import RuleCleaner
 from src.ip_engine import IPEngine
@@ -64,6 +65,34 @@ def main():
     print(f"Réduction initiale                  : -{reduction} règles (Doublons/Merges)")
 
     print("\n>>> Prêt pour la PHASE 4 : Fusion Sémantique (Patterns)")
+    
+    # Récupération des résultats de la phase 3
+    # Attention: ip_opt.optimize retourne (firewall_rules, inspection_rules)
+    # On ne touche PAS aux firewall_rules (elles sont finies).
+    # On va optimiser les inspection_rules.
+    
+    print("\n>>> PHASE 4 : FUSION SÉMANTIQUE (PATTERNS)")
+    content_opt = ContentEngine()
+    
+    # On optimise SEULEMENT les règles d'inspection
+    final_inspection_rules = content_opt.optimize(deep_rules)
+    
+    # Bilan Final
+    final_total = len(fw_rules) + len(final_inspection_rules)
+    total_reduction = total_before - final_total
+    percent = (total_reduction / total_before) * 100
+    
+    print("\n" + "="*50)
+    print("BILAN D'OPTIMISATION")
+    print("="*50)
+    print(f"Règles Initiales      : {total_before}")
+    print(f"Règles Finales        : {final_total}")
+    print(f"  - Firewall Pures    : {len(fw_rules)} (-> iptables)")
+    print(f"  - Patterns Optimisés: {len(final_inspection_rules)} (-> Hyperscan)")
+    print(f"GAIN TOTAL            : {total_reduction} règles supprimées (-{percent:.1f}%)")
+    print("="*50)
+    
+    print("\n>>> Prêt pour la PHASE 5 : EXPORT (C++)")
 
 if __name__ == "__main__":
     main()
