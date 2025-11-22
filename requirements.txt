@@ -1,0 +1,8 @@
+netaddr>=0.8.0           # Algèbre IP
+intervaltree>=3.1.0      # Gestion des ranges de ports/IP
+z3-solver>=4.12.0        # Moteur de preuve formelle (Subsomption)
+pyahocorasick>=2.0.0     # Pour pré-analyse des patterns
+python-Levenshtein       # Pour calcul de distance entre patterns (Clustering)
+networkx>=3.0            # Pour graphes de décision
+msgpack>=1.0.5           # Sérialisation binaire rapide vers C++
+tqdm                     # Barre de progression (seul "luxe" autorisé)
