@@ -108,7 +108,7 @@ def main():
     exporter.export_all(fw_rules, final_inspection_rules)
     
     print("\n" + "="*50)
-    print("✅ SUCCÈS : PRÉTRAITEMENT TERMINÉ")
+    print("SUCCÈS : PRÉTRAITEMENT TERMINÉ")
     print(f"Artefacts disponibles dans : {OUTPUT_DIR}")
     print("="*50)
 
