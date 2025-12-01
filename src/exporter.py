@@ -167,31 +167,102 @@ class Exporter:
             for p in r.patterns:
                 regex = p.string_val
                 
+                # 0. NETTOYAGE CRITIQUE : Enlever les modifiers Snort de la chaîne
+                # Ces modifiers sont parfois inclus après la fusion sémantique
+                regex = self._clean_snort_modifiers(regex)
+                
                 # 1. Conversion Hex |0A| -> \x0A
-                if '|' in regex:
-                    regex = re.sub(r'\|([0-9A-Fa-f\s]+)\|', 
-                                   lambda m: ''.join([f'\\x{b}' for b in m.group(1).split()]), 
-                                   regex)
+                regex = self._convert_hex_pipes(regex)
                 
                 # 2. Echappement si ce n'est pas déjà une regex (content simple)
                 if not p.is_regex:
+                    # Pour les patterns simples, on échappe les caractères spéciaux regex
                     regex = re.escape(regex)
+                else:
+                    # Pour les regex, on valide et nettoie
+                    regex = self._sanitize_regex(regex)
                 
-                # 3. Modifiers (nocase) -> (?i)
-                # Pattern Hyperscan: ID:/regex/flags
-                # On gérera les flags dans le fichier
+                # Skip les patterns vides ou invalides
+                if not regex or len(regex) < 1:
+                    continue
+                
+                # 3. Modifiers (nocase) -> flag 'i'
+                flags = ''
+                if 'nocase' in str(p.modifiers).lower():
+                    flags = 'i'
+                
                 regex_entry = {
                     'expr': regex,
-                    'flags': 'i' if 'nocase' in str(p.modifiers) else '' # Simplification parsing modifiers
+                    'flags': flags
                 }
                 regex_list.append(regex_entry)
             
-            hs_map[r.id] = {
-                'hs_id': current_hs_id,
-                'regex_list': regex_list
-            }
+            # Skip les règles sans patterns valides
+            if regex_list:
+                hs_map[r.id] = {
+                    'hs_id': current_hs_id,
+                    'regex_list': regex_list
+                }
             
         return hs_map
+
+    def _clean_snort_modifiers(self, s):
+        """
+        Enlève les modifiers Snort qui polluent les chaînes après fusion.
+        Ex: 'payload",depth 16,nocase' -> 'payload'
+        """
+        # Pattern pour les modifiers Snort typiques
+        # Ces modifiers sont souvent après un guillemet fermant
+        snort_modifiers = [
+            r'",\s*depth\s+\d+',
+            r'",\s*offset\s+\d+',
+            r'",\s*distance\s+\d+',
+            r'",\s*within\s+\d+',
+            r'",\s*fast_pattern(?:,\s*nocase)?',
+            r'",\s*nocase',
+            r',\s*fast_pattern_offset\s+\d+',
+            r',\s*fast_pattern_length\s+\d+',
+            r'",\s*fast_pattern,\s*nocase',
+        ]
+        
+        result = s
+        for mod in snort_modifiers:
+            result = re.sub(mod, '', result, flags=re.IGNORECASE)
+        
+        # Nettoyer les guillemets orphelins
+        result = result.strip('"').strip()
+        
+        return result
+    
+    def _convert_hex_pipes(self, s):
+        """
+        Convertit les séquences hex Snort |XX YY| en \xXX\xYY
+        """
+        def hex_replacer(match):
+            hex_bytes = match.group(1).split()
+            return ''.join([f'\\x{b}' for b in hex_bytes if len(b) == 2])
+        
+        # Remplacer |XX XX| par \xXX\xXX
+        result = re.sub(r'\|([0-9A-Fa-f\s]+)\|', hex_replacer, s)
+        return result
+    
+    def _sanitize_regex(self, regex):
+        """
+        Nettoie et valide une regex pour Hyperscan.
+        """
+        # Enlever les backslashes avant les espaces (Snort: '\ ' -> ' ')
+        regex = regex.replace('\\ ', ' ')
+        
+        # Enlever les échappements inutiles
+        regex = regex.replace('\\/', '/')
+        
+        # Vérifier les parenthèses équilibrées
+        if regex.count('(') != regex.count(')'):
+            # Tenter de réparer ou retourner une version simplifiée
+            # En cas de déséquilibre, on échappe tout
+            return re.escape(regex.replace('(', '').replace(')', ''))
+        
+        return regex
 
     def _export_hyperscan_patterns(self, hs_map, filename):
         """

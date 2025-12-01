@@ -163,6 +163,25 @@ class SnortParser:
             elif key == "pcre":
                 clean_val = val.strip('"')
                 rule.patterns.append(Pattern(string_val=clean_val, is_regex=True))
+            # --- MODIFIERS DE CONTENT (s'appliquent au dernier pattern) ---
+            elif key == "nocase":
+                if rule.patterns:
+                    rule.patterns[-1].modifiers['nocase'] = True
+            elif key == "depth":
+                if rule.patterns:
+                    rule.patterns[-1].modifiers['depth'] = val
+            elif key == "offset":
+                if rule.patterns:
+                    rule.patterns[-1].modifiers['offset'] = val
+            elif key == "distance":
+                if rule.patterns:
+                    rule.patterns[-1].modifiers['distance'] = val
+            elif key == "within":
+                if rule.patterns:
+                    rule.patterns[-1].modifiers['within'] = val
+            elif key == "fast_pattern":
+                if rule.patterns:
+                    rule.patterns[-1].modifiers['fast_pattern'] = True
             elif key == "flow":
                 if "to_server" in val: rule.direction = "to_server"
                 if "to_client" in val: rule.direction = "to_client"
