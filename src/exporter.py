@@ -171,9 +171,6 @@ class Exporter:
                 # Ces modifiers sont parfois inclus après la fusion sémantique
                 regex = self._clean_snort_modifiers(regex)
                 
-                # 1. Conversion Hex |0A| -> \x0A
-                regex = self._convert_hex_pipes(regex)
-                
                 # 2. Echappement si ce n'est pas déjà une regex (content simple)
                 if not p.is_regex:
                     # Pour les patterns simples, on échappe les caractères spéciaux regex
@@ -181,6 +178,10 @@ class Exporter:
                 else:
                     # Pour les regex, on valide et nettoie
                     regex = self._sanitize_regex(regex)
+                
+                # 1. Conversion Hex APRÈS escape : \|XX XX\| -> \xHH\xHH
+                # re.escape() transforme |XX| en \|XX\|, donc on matche ça
+                regex = self._convert_hex_pipes(regex)
                 
                 # Skip les patterns vides ou invalides
                 if not regex or len(regex) < 1:
@@ -236,15 +237,35 @@ class Exporter:
     
     def _convert_hex_pipes(self, s):
         """
-        Convertit les séquences hex Snort |XX YY| en \\xXX\\xYY
+        Convertit les séquences hex Snort en notation regex \\xHH.
+        Gère à la fois |XX YY| (non échappé) et \\|XX YY\\| (après re.escape).
+        Gère aussi les espaces échappés (\\ ) et les séquences sans espace (|0D0A|).
         """
         def hex_replacer(match):
-            hex_bytes = match.group(1).split()
-            # Utiliser une raw string pour éviter les problèmes d'échappement
-            return ''.join(['\\x' + b for b in hex_bytes if len(b) == 2])
+            hex_content = match.group(1)
+            # Nettoyer les espaces échappés (après re.escape, ' ' devient '\ ')
+            hex_content = hex_content.replace('\\ ', ' ')
+            
+            # Split par espace ou traiter comme séquence continue
+            if ' ' in hex_content:
+                hex_bytes = hex_content.split()
+            else:
+                # Séquence continue sans espace: 0D0A -> ['0D', '0A']
+                hex_bytes = [hex_content[i:i+2] for i in range(0, len(hex_content), 2)]
+            
+            # Filtrer les entrées valides (exactement 2 caractères hex)
+            valid_bytes = [b for b in hex_bytes if len(b) == 2 and all(c in '0123456789ABCDEFabcdef' for c in b)]
+            if not valid_bytes:
+                return match.group(0)  # Pas de conversion possible
+            # Convertir en \xHH notation
+            return ''.join([f'\\x{b.upper()}' for b in valid_bytes])
         
-        # Remplacer |XX XX| par \xXX\xXX
-        result = re.sub(r'\|([0-9A-Fa-f\s]+)\|', hex_replacer, s)
+        # Pattern pour matcher après re.escape: \|XX XX\| ou \|XXXX\|
+        # re.escape transforme | en \| (1 backslash + pipe)
+        # En regex raw string: r'\\\|' matche littéralement \|
+        result = re.sub(r'\\\|([0-9A-Fa-f\\ ]+)\\\|', hex_replacer, s)
+        # Puis le cas non-échappé (pour les pcre natifs): |XX XX|
+        result = re.sub(r'\|([0-9A-Fa-f ]+)\|', hex_replacer, result)
         return result
     
     def _sanitize_regex(self, regex):
