@@ -16,34 +16,251 @@ class ContentEngine:
     def optimize(self, rules: list[RuleVector]):
         print(f"[*] Démarrage de l'optimisation Sémantique Hybride sur {len(rules)} règles...")
         
-        # SÉGRÉGATION CRITIQUE
-        # On ne peut appliquer l'optimisation Trie (Factorisation) QUE sur les règles à pattern unique.
-        # Pour les règles multi-patterns, on doit utiliser une correspondance exacte pour ne pas casser la logique.
-        single_pattern_rules = []
-        multi_pattern_rules = []
+        # PHASE 0 : FUSION INTRA-RÈGLE (Multi-content → Single pattern)
+        # Chaque règle avec N patterns devient une règle avec 1 pattern fusionné
+        rules_with_fused_patterns = []
+        multi_fused_count = 0
         
         for r in rules:
-            if not r.patterns: continue
+            if not r.patterns: 
+                continue
             
-            # Condition stricte pour le mode Trie :
-            # 1 seul pattern, pas de regex, pas de négation
-            if len(r.patterns) == 1 and not r.patterns[0].is_regex and not r.patterns[0].negated:
-                single_pattern_rules.append(r)
+            if len(r.patterns) > 1:
+                # Fusionner les patterns internes de cette règle
+                fused_pattern = self._fuse_internal_patterns(r.patterns)
+                multi_fused_count += 1
+                
+                # Créer une nouvelle règle avec le pattern fusionné
+                new_rule = RuleVector(
+                    id=r.id,
+                    original_text=r.original_text,
+                    proto=r.proto,
+                    src_ips=r.src_ips,
+                    src_ports=r.src_ports,
+                    dst_ips=r.dst_ips,
+                    dst_ports=r.dst_ports,
+                    direction=r.direction,
+                    established=r.established,
+                    tcp_flags=r.tcp_flags,
+                    icmp_type=r.icmp_type,
+                    icmp_code=r.icmp_code,
+                    action=r.action,
+                    patterns=[fused_pattern]
+                )
+                rules_with_fused_patterns.append(new_rule)
             else:
-                multi_pattern_rules.append(r)
+                rules_with_fused_patterns.append(r)
+        
+        print(f"    - Fusion Intra-Règle : {multi_fused_count} règles multi-content → single pattern")
+        
+        # PHASE 1 : SÉGRÉGATION pour optimisation inter-règles
+        single_pattern_rules = []
+        regex_pattern_rules = []
+        
+        for r in rules_with_fused_patterns:
+            # Après fusion, toutes les règles ont 1 seul pattern
+            p = r.patterns[0]
+            
+            # Les patterns fusionnés sont des regex, on les traite séparément
+            if p.is_regex or p.negated:
+                regex_pattern_rules.append(r)
+            else:
+                single_pattern_rules.append(r)
 
         print(f"    - Règles Simples (Trie Opt.) : {len(single_pattern_rules)}")
-        print(f"    - Règles Complexes (Hash Opt.) : {len(multi_pattern_rules)}")
+        print(f"    - Règles Regex (Hash Opt.) : {len(regex_pattern_rules)}")
 
         optimized_rules = []
         
         # 1. Optimisation Lexicale (Trie) pour les patterns simples
         optimized_rules.extend(self._optimize_via_trie(single_pattern_rules))
         
-        # 2. Optimisation Exacte pour les patterns complexes
-        optimized_rules.extend(self._optimize_via_hash(multi_pattern_rules))
+        # 2. Optimisation Exacte pour les regex
+        optimized_rules.extend(self._optimize_via_hash(regex_pattern_rules))
         
         return optimized_rules
+
+    def _fuse_internal_patterns(self, patterns: list[Pattern]) -> Pattern:
+        """
+        Fusionne les patterns internes d'une règle en UN SEUL pattern regex.
+        
+        Sémantique Snort : Tous les content: doivent matcher (ET logique).
+        
+        STRATÉGIE DE FUSION INTELLIGENTE (Recommandation Recherche) :
+        ============================================================
+        
+        CAS 1 : Règle avec pcre: explicite
+        ----------------------------------
+        → Garder la PCRE telle quelle (elle est déjà optimisée par l'auteur)
+        
+        CAS 2 : Multi-content AVEC distance/within
+        ------------------------------------------
+        → Fusion séquentielle : A.{0,N}B.{0,M}C
+        → Hyperscan supporte les quantificateurs bornés
+        → Préserve la sémantique de proximité
+        
+        CAS 3 : Multi-content SANS contraintes de position
+        --------------------------------------------------
+        → Alternation : (A|B|C)
+        → Si UN pattern matche, Hyperscan déclenche et on vérifie le reste
+        → Performance optimale pour Hyperscan (parallélisme DFA)
+        """
+        if len(patterns) == 1:
+            return patterns[0]
+        
+        # Séparer les types de patterns
+        pcre_patterns = [p for p in patterns if p.is_regex]
+        content_patterns = [p for p in patterns if not p.is_regex and not p.negated]
+        
+        # =====================================================
+        # CAS 1 : Il y a une PCRE explicite
+        # =====================================================
+        if pcre_patterns:
+            # La PCRE est généralement le pattern le plus discriminant
+            # On prend la plus longue (plus spécifique)
+            main_pcre = max(pcre_patterns, key=lambda p: len(p.string_val or ''))
+            return main_pcre
+        
+        # =====================================================
+        # CAS 2 & 3 : Fusion des content simples
+        # =====================================================
+        if not content_patterns:
+            return patterns[0]
+        
+        # Vérifier si des patterns ont des contraintes de position
+        has_positional_constraints = any(
+            p.modifiers.get('distance') or p.modifiers.get('within')
+            for p in content_patterns
+        )
+        
+        # Collecter le flag nocase (si AU MOINS un pattern l'a, on l'applique à tous)
+        has_nocase = any(
+            'nocase' in str(p.modifiers).lower()
+            for p in content_patterns
+        )
+        
+        if has_positional_constraints:
+            # =====================================================
+            # CAS 2 : Fusion séquentielle avec quantificateurs bornés
+            # =====================================================
+            fused_regex = self._build_sequential_regex(content_patterns)
+        else:
+            # =====================================================
+            # CAS 3 : Alternation (A|B|C)
+            # =====================================================
+            fused_regex = self._build_alternation_regex(content_patterns)
+        
+        # Créer le pattern fusionné
+        return Pattern(
+            string_val=fused_regex,
+            is_regex=True,
+            negated=False,
+            modifiers={'nocase': 'true'} if has_nocase else {}
+        )
+    
+    def _escape_for_regex(self, s: str) -> str:
+        """
+        Échappe une chaîne pour l'utiliser dans une regex.
+        Préserve les séquences hexadécimales |XX XX|.
+        """
+        if not s:
+            return ''
+        
+        # Caractères spéciaux regex à échapper
+        special_chars = r'\.^$*+?{}[]|()'
+        
+        result = []
+        i = 0
+        while i < len(s):
+            c = s[i]
+            if c in special_chars:
+                result.append('\\')
+                result.append(c)
+            else:
+                result.append(c)
+            i += 1
+        
+        return ''.join(result)
+    
+    def _build_sequential_regex(self, patterns: list[Pattern]) -> str:
+        """
+        Construit une regex séquentielle : A.{0,N}B.{0,M}C
+        
+        Utilise les modifiers distance/within pour calculer les bornes.
+        - distance: nombre minimum de bytes entre les patterns
+        - within: nombre maximum de bytes dans lequel le pattern doit apparaître
+        """
+        if not patterns:
+            return ''
+        
+        parts = []
+        
+        for i, p in enumerate(patterns):
+            escaped_pattern = self._escape_for_regex(p.string_val or '')
+            
+            if i == 0:
+                # Premier pattern : pas de contrainte avant
+                parts.append(escaped_pattern)
+            else:
+                # Patterns suivants : analyser distance/within
+                distance = p.modifiers.get('distance')
+                within = p.modifiers.get('within')
+                
+                # Calculer les bornes du quantificateur
+                min_gap = 0
+                max_gap = 1000  # Valeur par défaut raisonnable
+                
+                if distance:
+                    try:
+                        min_gap = int(distance)
+                    except ValueError:
+                        min_gap = 0
+                
+                if within:
+                    try:
+                        max_gap = int(within)
+                    except ValueError:
+                        max_gap = 1000
+                
+                # Construire le connecteur .{min,max}
+                if min_gap == 0 and max_gap >= 1000:
+                    connector = '.*?'  # Non-greedy pour performance
+                else:
+                    connector = f'.{{{min_gap},{max_gap}}}'
+                
+                parts.append(connector)
+                parts.append(escaped_pattern)
+        
+        return ''.join(parts)
+    
+    def _build_alternation_regex(self, patterns: list[Pattern]) -> str:
+        """
+        Construit une regex en alternation : (A|B|C)
+        
+        Chaque pattern est échappé et ajouté comme alternative.
+        L'ordre est optimisé : patterns les plus longs en premier
+        (pour favoriser les matchs les plus spécifiques).
+        """
+        if not patterns:
+            return ''
+        
+        # Trier par longueur décroissante (patterns longs = plus spécifiques)
+        sorted_patterns = sorted(
+            patterns,
+            key=lambda p: len(p.string_val or ''),
+            reverse=True
+        )
+        
+        alternatives = []
+        for p in sorted_patterns:
+            escaped = self._escape_for_regex(p.string_val or '')
+            if escaped:
+                alternatives.append(escaped)
+        
+        if len(alternatives) == 1:
+            return alternatives[0]
+        
+        return '(' + '|'.join(alternatives) + ')'
 
     def _optimize_via_hash(self, rules: list[RuleVector]):
         """
