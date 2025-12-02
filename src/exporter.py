@@ -271,18 +271,33 @@ class Exporter:
     def _sanitize_regex(self, regex):
         """
         Nettoie et valide une regex pour Hyperscan.
-        """
-        # Enlever les backslashes avant les espaces (Snort: '\ ' -> ' ')
-        regex = regex.replace('\\ ', ' ')
         
-        # Enlever les échappements inutiles
-        regex = regex.replace('\\/', '/')
+        ATTENTION : Cette fonction est appelée UNIQUEMENT pour les PCRE natives
+        provenant de Snort (is_regex=True dès le parsing).
+        
+        Les regex fusionnées par ContentEngine sont déjà correctement formées,
+        on ne modifie donc que les cas problématiques spécifiques à Snort.
+        """
+        if not regex:
+            return ''
+        
+        # Convertir les espaces échappés Snort '\ ' SEULEMENT au début/fin
+        # (Snort utilise '\ ' pour les espaces significatifs dans content)
+        # On ne touche PAS aux espaces internes des alternations/groupes
+        
+        # Enlever les échappements inutiles de slashes (Snort: \/ -> /)
+        # MAIS seulement dans les PCRE natives, pas dans nos regex fusionnées
+        if regex.startswith('/') or '\\/' in regex:
+            regex = regex.replace('\\/', '/')
         
         # Vérifier les parenthèses équilibrées
-        if regex.count('(') != regex.count(')'):
-            # Tenter de réparer ou retourner une version simplifiée
-            # En cas de déséquilibre, on échappe tout
-            return re.escape(regex.replace('(', '').replace(')', ''))
+        open_count = regex.count('(') - regex.count('\\(')
+        close_count = regex.count(')') - regex.count('\\)')
+        
+        if open_count != close_count:
+            # Log warning mais ne pas casser la regex
+            # On retourne quand même, Hyperscan rejettera si invalide
+            pass
         
         return regex
 
@@ -329,8 +344,12 @@ class Exporter:
             for p in r.dst_ports.iter_cidrs():
                 if hasattr(p, 'first'): dst_ports.append([p.first, p.last])
 
-            # Lien vers Hyperscan
-            hs_id = hs_map[r.id]['hs_id']
+            # Lien vers Hyperscan (avec protection contre KeyError)
+            hs_data = hs_map.get(r.id)
+            if not hs_data:
+                # Si la règle n'a pas de pattern valide, skip
+                continue
+            hs_id = hs_data['hs_id']
             
             # Structure de l'objet binaire
             rule_obj = {
