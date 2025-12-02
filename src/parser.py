@@ -158,11 +158,14 @@ class SnortParser:
                 val = ""
 
             if key == "content":
-                clean_val = val.strip('"')
-                rule.patterns.append(Pattern(string_val=clean_val))
+                # Extraire UNIQUEMENT ce qui est entre guillemets
+                clean_val = self._extract_quoted_value(val)
+                if clean_val is not None:
+                    rule.patterns.append(Pattern(string_val=clean_val))
             elif key == "pcre":
-                clean_val = val.strip('"')
-                rule.patterns.append(Pattern(string_val=clean_val, is_regex=True))
+                clean_val = self._extract_quoted_value(val)
+                if clean_val is not None:
+                    rule.patterns.append(Pattern(string_val=clean_val, is_regex=True))
             # --- MODIFIERS DE CONTENT (s'appliquent au dernier pattern) ---
             elif key == "nocase":
                 if rule.patterns:
@@ -203,3 +206,33 @@ class SnortParser:
                 # Pour l'instant, on ne le met pas en signature principale car iptables gère mal l'ID
                 # Mais on peut le garder pour éviter la fusion abusive
                 pass
+
+    def _extract_quoted_value(self, val):
+        """
+        Extrait uniquement la valeur entre guillemets.
+        Ex: '"hello",depth 16' -> 'hello'
+        Ex: '"test|00|data"' -> 'test|00|data'
+        """
+        if not val:
+            return None
+        
+        val = val.strip()
+        if not val.startswith('"'):
+            return val  # Pas de guillemet, retourner tel quel
+        
+        # Trouver le guillemet fermant (en gérant les échappements)
+        i = 1
+        result = []
+        while i < len(val):
+            if val[i] == '\\' and i + 1 < len(val):
+                # Caractère échappé
+                result.append(val[i:i+2])
+                i += 2
+            elif val[i] == '"':
+                # Guillemet fermant trouvé
+                break
+            else:
+                result.append(val[i])
+                i += 1
+        
+        return ''.join(result) if result else None

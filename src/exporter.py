@@ -236,11 +236,12 @@ class Exporter:
     
     def _convert_hex_pipes(self, s):
         """
-        Convertit les séquences hex Snort |XX YY| en \xXX\xYY
+        Convertit les séquences hex Snort |XX YY| en \\xXX\\xYY
         """
         def hex_replacer(match):
             hex_bytes = match.group(1).split()
-            return ''.join([f'\\x{b}' for b in hex_bytes if len(b) == 2])
+            # Utiliser une raw string pour éviter les problèmes d'échappement
+            return ''.join(['\\x' + b for b in hex_bytes if len(b) == 2])
         
         # Remplacer |XX XX| par \xXX\xXX
         result = re.sub(r'\|([0-9A-Fa-f\s]+)\|', hex_replacer, s)
