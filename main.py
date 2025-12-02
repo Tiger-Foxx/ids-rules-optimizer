@@ -11,9 +11,11 @@ INPUT_DIR = os.path.join(BASE_DIR, 'inputs')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'outputs')
 
 def main():
-    parser = argparse.ArgumentParser(description="Optimiseur de Règles Réseau - Research PoC")
-    parser.add_argument('--rules', type=str, required=True, help="Nom du fichier dans le dossier inputs/")
-    args = parser.parse_args()
+    arg_parser = argparse.ArgumentParser(description="Optimiseur de Règles Réseau - Research PoC")
+    arg_parser.add_argument('--rules', type=str, required=True, help="Nom du fichier dans le dossier inputs/")
+    arg_parser.add_argument('--test-mode', action='store_true', 
+                           help="Mode test: $EXTERNAL_NET = any (pour tests internes CloudLab)")
+    args = arg_parser.parse_args()
 
     input_file = os.path.join(INPUT_DIR, args.rules)
     clean_file = os.path.join(OUTPUT_DIR, 'cleaned_baseline.rules')
@@ -32,8 +34,8 @@ def main():
     print("\n>>> Prêt pour la PHASE 2 : Parsing & Modélisation")
     
     print("\n>>> PHASE 2 : PARSING & MODÉLISATION")
-    parser = SnortParser()
-    rules_objects = parser.parse_file(clean_file)
+    snort_parser = SnortParser(test_mode=args.test_mode)
+    rules_objects = snort_parser.parse_file(clean_file)
     
     print(f"Règles parsées avec succès : {len(rules_objects)}")
     # Vérification sur une règle complexe (ex: sid 144)

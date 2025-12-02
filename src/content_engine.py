@@ -127,28 +127,33 @@ class ContentEngine:
         if not content_patterns:
             return patterns[0]
         
-        # Vérifier si des patterns ont des contraintes de position
-        has_positional_constraints = any(
-            p.modifiers.get('distance') or p.modifiers.get('within')
-            for p in content_patterns
-        )
-        
         # Collecter le flag nocase (si AU MOINS un pattern l'a, on l'applique à tous)
         has_nocase = any(
             'nocase' in str(p.modifiers).lower()
             for p in content_patterns
         )
         
+        # Vérifier si des patterns ont des contraintes de position
+        has_positional_constraints = any(
+            p.modifiers.get('distance') or p.modifiers.get('within')
+            for p in content_patterns
+        )
+        
         if has_positional_constraints:
             # =====================================================
             # CAS 2 : Fusion séquentielle avec quantificateurs bornés
+            # A.{min,max}B.{min,max}C
             # =====================================================
             fused_regex = self._build_sequential_regex(content_patterns)
         else:
             # =====================================================
-            # CAS 3 : Alternation (A|B|C)
+            # CAS 3 : Multi-content SANS contraintes
+            # Sémantique Snort : TOUS les patterns doivent matcher (AND)
+            # On utilise une regex séquentielle avec .*? entre chaque
+            # Pour l'ordre, on trie par longueur décroissante (pattern le plus 
+            # spécifique en premier pour performance Hyperscan)
             # =====================================================
-            fused_regex = self._build_alternation_regex(content_patterns)
+            fused_regex = self._build_unordered_and_regex(content_patterns)
         
         # Créer le pattern fusionné
         return Pattern(
@@ -237,9 +242,11 @@ class ContentEngine:
         """
         Construit une regex en alternation : (A|B|C)
         
-        Chaque pattern est échappé et ajouté comme alternative.
-        L'ordre est optimisé : patterns les plus longs en premier
-        (pour favoriser les matchs les plus spécifiques).
+        ATTENTION: Cette méthode n'est plus utilisée pour les multi-content Snort
+        car elle implémente une logique OR, alors que Snort utilise AND.
+        
+        Gardée pour les cas où on veut explicitement une alternation
+        (ex: fusion de règles avec le même contexte mais patterns différents).
         """
         if not patterns:
             return ''
@@ -261,6 +268,48 @@ class ContentEngine:
             return alternatives[0]
         
         return '(' + '|'.join(alternatives) + ')'
+
+    def _build_unordered_and_regex(self, patterns: list[Pattern]) -> str:
+        """
+        Construit une regex pour multi-content Snort SANS contraintes de position.
+        
+        Sémantique Snort : TOUS les patterns doivent être présents dans le payload.
+        Comme l'ordre n'est pas garanti, on utilise des lookaheads positifs :
+        
+        (?=.*?A)(?=.*?B)(?=.*?C)
+        
+        Chaque lookahead vérifie qu'un pattern est présent quelque part.
+        Cette approche est compatible avec Hyperscan (supporte lookaheads).
+        
+        Alternative plus simple mais moins performante : A.*?B.*?C
+        (assume un ordre, ce qui n'est pas toujours vrai)
+        """
+        if not patterns:
+            return ''
+        
+        if len(patterns) == 1:
+            return self._escape_for_regex(patterns[0].string_val or '')
+        
+        # Trier par longueur décroissante (pattern le plus spécifique en premier)
+        sorted_patterns = sorted(
+            patterns,
+            key=lambda p: len(p.string_val or ''),
+            reverse=True
+        )
+        
+        # Méthode 1: Lookaheads (ordre indépendant, sémantique AND exacte)
+        # (?=.*?pattern1)(?=.*?pattern2).*
+        lookaheads = []
+        for p in sorted_patterns:
+            escaped = self._escape_for_regex(p.string_val or '')
+            if escaped:
+                lookaheads.append(f'(?=.*?{escaped})')
+        
+        if len(lookaheads) == 1:
+            return self._escape_for_regex(sorted_patterns[0].string_val or '')
+        
+        # Le .* final est nécessaire pour consommer du texte (sinon le lookahead seul ne consomme rien)
+        return ''.join(lookaheads) + '.*'
 
     def _optimize_via_hash(self, rules: list[RuleVector]):
         """

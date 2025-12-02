@@ -3,12 +3,21 @@ import netaddr
 from .models import RuleVector, Pattern
 
 class SnortParser:
-    def __init__(self):
+    def __init__(self, test_mode=False):
+        """
+        @param test_mode: Si True, $EXTERNAL_NET = any (pour tests internes CloudLab)
+        """
         self.UNIVERSE = netaddr.IPSet(['0.0.0.0/0'])
         
         # Variables standard
         home_net = netaddr.IPSet(['192.168.0.0/16', '10.0.0.0/8'])
-        external_net = self.UNIVERSE - home_net
+        
+        # En mode test, EXTERNAL_NET = any pour matcher les attaques internes
+        if test_mode:
+            external_net = self.UNIVERSE
+            print("[PARSER] TEST MODE: $EXTERNAL_NET = any (pour tests internes)")
+        else:
+            external_net = self.UNIVERSE - home_net
 
         self.variables = {
             "$HOME_NET": home_net,

@@ -1,0 +1,24 @@
+# Règles de test XSS explicites pour validation du filtrage
+# Ces règles utilisent "any any -> any any" pour matcher tout trafic
+
+# Règle XSS basique - détecte <script> dans le payload
+drop tcp any any -> any any (msg:"TEST XSS Basic - script tag"; flow:to_server,established; content:"<script"; nocase; sid:999001; rev:1;)
+
+# Règle XSS avec alert()
+drop tcp any any -> any any (msg:"TEST XSS Alert Function"; flow:to_server,established; content:"alert("; nocase; sid:999002; rev:1;)
+
+# Règle XSS avec javascript:
+drop tcp any any -> any any (msg:"TEST XSS javascript protocol"; flow:to_server,established; content:"javascript:"; nocase; sid:999003; rev:1;)
+
+# Règle XSS avec onerror/onload
+drop tcp any any -> any any (msg:"TEST XSS Event Handler"; flow:to_server,established; content:"onerror"; nocase; sid:999004; rev:1;)
+drop tcp any any -> any any (msg:"TEST XSS Event Handler onload"; flow:to_server,established; content:"onload"; nocase; sid:999005; rev:1;)
+
+# Règle pour tester sur HTTP GET avec paramètres
+drop tcp any any -> any 80 (msg:"TEST XSS in HTTP"; flow:to_server,established; content:"GET"; content:"<script"; nocase; sid:999006; rev:1;)
+
+# Règle SQL Injection test
+drop tcp any any -> any any (msg:"TEST SQLi UNION"; flow:to_server,established; content:"UNION"; nocase; content:"SELECT"; nocase; sid:999010; rev:1;)
+
+# Règle simple pour test - matche "XSS" littéralement (facile à tester)
+drop tcp any any -> any any (msg:"TEST Simple XSS marker"; flow:to_server,established; content:"XSS"; sid:999099; rev:1;)
