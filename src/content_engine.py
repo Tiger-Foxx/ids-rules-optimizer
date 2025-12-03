@@ -165,27 +165,19 @@ class ContentEngine:
     
     def _escape_for_regex(self, s: str) -> str:
         """
-        Échappe une chaîne pour l'utiliser dans une regex.
-        Préserve les séquences hexadécimales |XX XX|.
+        Échappe une chaîne pour l'utiliser dans une regex Hyperscan.
+        
+        Note: On utilise re.escape() de Python qui est robuste,
+        puis on ajuste pour les cas spéciaux Hyperscan.
         """
+        import re
         if not s:
             return ''
         
-        # Caractères spéciaux regex à échapper
-        special_chars = r'\.^$*+?{}[]|()'
+        # Utiliser l'échappement standard Python (robuste et testé)
+        escaped = re.escape(s)
         
-        result = []
-        i = 0
-        while i < len(s):
-            c = s[i]
-            if c in special_chars:
-                result.append('\\')
-                result.append(c)
-            else:
-                result.append(c)
-            i += 1
-        
-        return ''.join(result)
+        return escaped
     
     def _build_sequential_regex(self, patterns: list[Pattern]) -> str:
         """
@@ -273,16 +265,18 @@ class ContentEngine:
         """
         Construit une regex pour multi-content Snort SANS contraintes de position.
         
-        Sémantique Snort : TOUS les patterns doivent être présents dans le payload.
-        Comme l'ordre n'est pas garanti, on utilise des lookaheads positifs :
+        LIMITATION HYPERSCAN : Les lookaheads (?=) ne sont PAS supportés en mode STREAM.
         
-        (?=.*?A)(?=.*?B)(?=.*?C)
+        SOLUTION : On utilise une regex séquentielle A.*?B.*?C
+        Cela assume que les patterns apparaissent dans l'ordre donné, ce qui n'est
+        pas toujours vrai pour Snort. C'est une approximation qui peut avoir des
+        faux négatifs mais jamais de faux positifs.
         
-        Chaque lookahead vérifie qu'un pattern est présent quelque part.
-        Cette approche est compatible avec Hyperscan (supporte lookaheads).
+        Pour une sémantique AND parfaite, il faudrait :
+        - Soit générer TOUTES les permutations (explosion combinatoire)
+        - Soit faire la vérification multi-pattern côté C++
         
-        Alternative plus simple mais moins performante : A.*?B.*?C
-        (assume un ordre, ce qui n'est pas toujours vrai)
+        Pour le PoC, on accepte cette limitation.
         """
         if not patterns:
             return ''
@@ -291,25 +285,25 @@ class ContentEngine:
             return self._escape_for_regex(patterns[0].string_val or '')
         
         # Trier par longueur décroissante (pattern le plus spécifique en premier)
+        # Cela maximise les chances de trouver le bon ordre
         sorted_patterns = sorted(
             patterns,
             key=lambda p: len(p.string_val or ''),
             reverse=True
         )
         
-        # Méthode 1: Lookaheads (ordre indépendant, sémantique AND exacte)
-        # (?=.*?pattern1)(?=.*?pattern2).*
-        lookaheads = []
+        # Construire A.*?B.*?C (séquentiel avec wildcards non-greedy)
+        parts = []
         for p in sorted_patterns:
             escaped = self._escape_for_regex(p.string_val or '')
             if escaped:
-                lookaheads.append(f'(?=.*?{escaped})')
+                parts.append(escaped)
         
-        if len(lookaheads) == 1:
-            return self._escape_for_regex(sorted_patterns[0].string_val or '')
+        if len(parts) == 1:
+            return parts[0]
         
-        # Le .* final est nécessaire pour consommer du texte (sinon le lookahead seul ne consomme rien)
-        return ''.join(lookaheads) + '.*'
+        # Joindre avec .*? (match non-greedy de n'importe quoi)
+        return '.*?'.join(parts)
 
     def _optimize_via_hash(self, rules: list[RuleVector]):
         """
