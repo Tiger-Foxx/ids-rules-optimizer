@@ -12,8 +12,22 @@ class Pattern:
 
     def __hash__(self):
         # Hachage stable pour le regroupement
-        mods = tuple(sorted(self.modifiers.items()))
+        mods = tuple(sorted((k, v) for k, v in self.modifiers.items() if not k.startswith('_')))
         return hash((self.string_val, self.hex_val, self.is_regex, self.negated, mods))
+    
+    def __eq__(self, other):
+        if not isinstance(other, Pattern):
+            return False
+        # Exclure les clés internes (_aggregated_or, etc.) pour la comparaison
+        self_mods = {k: v for k, v in self.modifiers.items() if not k.startswith('_')}
+        other_mods = {k: v for k, v in other.modifiers.items() if not k.startswith('_')}
+        return (
+            self.string_val == other.string_val and
+            self.hex_val == other.hex_val and
+            self.is_regex == other.is_regex and
+            self.negated == other.negated and
+            self_mods == other_mods
+        )
 
 @dataclass
 class RuleVector:
