@@ -224,27 +224,37 @@ class Exporter:
                     # Règle MULTI-CONTENT originale : AND (TOUS doivent matcher)
                     expression = "(" + " & ".join(map(str, sorted_ids)) + ")"
                     and_count += 1
+                
+                # Assignation de l'ID logique final (avec COMBINATION)
+                logical_id = logical_id_counter
+                logical_id_counter += 1
+                
+                hs_map[r.id] = {
+                    'hs_id': logical_id,
+                    'expression': expression,
+                    'flags': 'c',  # HS_FLAG_COMBINATION obligatoire
+                    'atomic_ids': sorted_ids,
+                    'is_or': is_aggregated_or,
+                    'is_multi': True
+                }
             else:
-                # Un seul pattern
-                expression = f"({sorted_ids[0]})"
-            
-            # Assignation de l'ID logique final
-            logical_id = logical_id_counter
-            logical_id_counter += 1
-            
-            hs_map[r.id] = {
-                'hs_id': logical_id,
-                'expression': expression,
-                'flags': 'c',  # HS_FLAG_COMBINATION obligatoire
-                'atomic_ids': sorted_ids,
-                'is_or': is_aggregated_or,
-                'is_multi': len(sorted_ids) > 1
-            }
+                # Un seul pattern : PAS de COMBINATION, référence directe à l'atomique
+                # Hyperscan n'accepte pas "(1)" comme expression logique
+                single_atomic_id = sorted_ids[0]
+                
+                hs_map[r.id] = {
+                    'hs_id': single_atomic_id,  # Référence directe à l'ID atomique
+                    'expression': None,  # Pas d'expression combinatoire
+                    'flags': None,  # Pas de flag COMBINATION
+                    'atomic_ids': sorted_ids,
+                    'is_or': False,
+                    'is_multi': False
+                }
         
         print(f"    - Patterns atomiques uniques : {len(unique_atomic_patterns)}")
         print(f"    - Expressions logiques : {len(hs_map)}")
-        print(f"    - Règles agrégées (OR) : {or_count}")
-        print(f"    - Règles multi-content (AND) : {and_count}")
+        print(f"    - Regles agregees (OR) : {or_count}")
+        print(f"    - Regles multi-content (AND) : {and_count}")
         
         return hs_map, unique_atomic_patterns
     
@@ -359,15 +369,20 @@ class Exporter:
             # Section 2 : Expressions logiques combinatoires
             f.write("\n# === LOGICAL EXPRESSIONS (Rule Combinations with HS_FLAG_COMBINATION) ===\n")
             
+            # Filtrer seulement les règles avec expression combinatoire (multi-pattern)
+            # Les règles à 1 seul pattern utilisent directement l'ID atomique
+            multi_pattern_rules = [r for r in hs_map.values() if r['is_multi'] and r['expression']]
+            
             # Trier par ID logique pour stabilité
-            sorted_rules = sorted(hs_map.values(), key=lambda x: x['hs_id'])
+            sorted_rules = sorted(multi_pattern_rules, key=lambda x: x['hs_id'])
             
             for rule_data in sorted_rules:
                 # Format : ID:/expression/c
                 # L'expression est déjà au format (1 & 2 & 3)
                 f.write(f"{rule_data['hs_id']}:/{rule_data['expression']}/{rule_data['flags']}\n")
         
-        print(f"    -> Généré : {filename} ({len(sorted_atomic)} atomic, {len(sorted_rules)} logical)")
+        single_pattern_count = len(hs_map) - len(sorted_rules)
+        print(f"    -> Genere : {filename} ({len(sorted_atomic)} atomic, {len(sorted_rules)} logical, {single_pattern_count} single-ref)")
 
     def _clean_snort_modifiers(self, s):
         """
