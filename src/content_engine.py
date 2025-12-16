@@ -65,6 +65,35 @@ class ContentEngine:
         self.MIN_PREFIX_LEN = 4    # Longueur min du préfixe commun
         self.MIN_BRANCHING_FACTOR = 2  # Nombre min de patterns à fusionner
 
+    def _validate_regex_parentheses(self, regex: str) -> bool:
+        """
+        Vérifie que les parenthèses sont équilibrées dans la regex.
+        
+        Gère les cas échappés : \\( et \\) ne comptent pas.
+        Retourne True si valide, False sinon.
+        """
+        depth = 0
+        i = 0
+        while i < len(regex):
+            char = regex[i]
+            
+            # Vérifier si c'est un caractère échappé
+            if char == '\\' and i + 1 < len(regex):
+                # Skip le caractère échappé
+                i += 2
+                continue
+            
+            if char == '(':
+                depth += 1
+            elif char == ')':
+                depth -= 1
+                if depth < 0:
+                    return False  # Trop de parenthèses fermantes
+            
+            i += 1
+        
+        return depth == 0  # True si toutes les parenthèses sont fermées
+
     def optimize(self, rules: List[RuleVector]) -> List[RuleVector]:
         """
         Pipeline d'optimisation principal avec FACTORISATION TRIE GLOBALE.
@@ -109,9 +138,9 @@ class ContentEngine:
         percent = (reduction / initial_count * 100) if initial_count > 0 else 0
         
         print(f"    >>> FACTORISATION TRIE :")
-        print(f"        - Patterns fusionnés : {patterns_factorized} → {patterns_after_fusion} groupes")
+        print(f"        - Patterns fusionnes : {patterns_factorized} -> {patterns_after_fusion} groupes")
         print(f"        - Patterns non fusionnés : {remaining_simple}")
-        print(f"    >>> GAIN RÉEL : {initial_count} → {final_count} patterns (-{percent:.1f}%)")
+        print(f"    >>> GAIN REEL : {initial_count} -> {final_count} patterns (-{percent:.1f}%)")
 
         # =================================================================
         # PHASE 4 : RÉINJECTION
@@ -283,6 +312,16 @@ class ContentEngine:
                 fused_regex = f"{prefix_escaped}(?:{alternation})"
             else:
                 # Aucune factorisation utile
+                return
+
+            # =================================================================
+            # VALIDATION : Vérifier les parenthèses équilibrées
+            # =================================================================
+            if not self._validate_regex_parentheses(fused_regex):
+                # Pattern malformé ! On abandonne cette factorisation
+                # et on continue la descente pour factoriser plus bas
+                for char, child in node.children.items():
+                    self._traverse_and_factorize(child, current_prefix + char, flags, factorized_map)
                 return
 
             # Création du Pattern factorisé

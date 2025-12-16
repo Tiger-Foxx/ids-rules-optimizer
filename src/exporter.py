@@ -274,6 +274,13 @@ class Exporter:
         if not regex:
             return None
         
+        # =================================================================
+        # VALIDATION CRITIQUE : Vérifier les parenthèses équilibrées
+        # =================================================================
+        if not self._validate_parentheses(regex):
+            print(f"[WARN] Pattern rejeté (parenthèses déséquilibrées): {regex[:80]}...")
+            return None
+        
         # Détermination des flags
         flags = ''
         modifiers_str = str(p.modifiers).lower() if p.modifiers else ''
@@ -285,6 +292,35 @@ class Exporter:
         flags += 's'
         
         return {'expr': regex, 'flags': flags}
+    
+    def _validate_parentheses(self, regex: str) -> bool:
+        """
+        Vérifie que les parenthèses sont équilibrées dans la regex.
+        
+        Gère les cas échappés : \\( et \\) ne comptent pas.
+        Retourne True si valide, False sinon.
+        """
+        depth = 0
+        i = 0
+        while i < len(regex):
+            char = regex[i]
+            
+            # Vérifier si c'est un caractère échappé
+            if char == '\\' and i + 1 < len(regex):
+                # Skip le caractère échappé
+                i += 2
+                continue
+            
+            if char == '(':
+                depth += 1
+            elif char == ')':
+                depth -= 1
+                if depth < 0:
+                    return False  # Trop de parenthèses fermantes
+            
+            i += 1
+        
+        return depth == 0  # True si toutes les parenthèses sont fermées
     
     def _export_hyperscan_patterns_combinatorial(self, hs_map, atomic_patterns, filename):
         """
@@ -406,12 +442,37 @@ class Exporter:
         
         2. Les constructions \A et \Z (ancres Perl) idem
         
-        3. Les lookahead/lookbehind complexes peuvent poser problème
+        3. Les back-references \1, \2... ne sont PAS supportées
+           - HS_ERROR: "Back-references are unsupported"
+           - Solution: Rejeter le pattern entièrement (impossible à convertir)
+        
+        4. Les lookahead/lookbehind complexes peuvent poser problème
         
         ATTENTION : Cette fonction est appelée UNIQUEMENT pour les PCRE natives
         provenant de Snort (is_regex=True dès le parsing).
+        
+        Retourne '' (chaîne vide) si le pattern doit être rejeté.
         """
         if not regex:
+            return ''
+        
+        # ===================================================================
+        # ETAPE 0 : Détection des constructions NON SUPPORTÉES (REJET)
+        # ===================================================================
+        
+        # Back-references \1, \2, ..., \9 (non échappées)
+        # Pattern: \1 à \9 mais pas \\1 (qui serait un backslash + chiffre littéral)
+        if re.search(r'(?<!\\)\\[1-9]', regex):
+            print(f"[WARN] Pattern rejete (back-reference): {regex[:60]}...")
+            return ''
+        
+        # Zero-width assertions (lookahead / lookbehind) - NON SUPPORTEES
+        # (?=...) positive lookahead
+        # (?!...) negative lookahead
+        # (?<=...) positive lookbehind
+        # (?<!...) negative lookbehind
+        if re.search(r'\(\?[=!]|\(\?<[=!]', regex):
+            print(f"[WARN] Pattern rejete (zero-width assertion): {regex[:60]}...")
             return ''
         
         # ===================================================================
