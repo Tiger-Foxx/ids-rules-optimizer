@@ -567,6 +567,9 @@ class Exporter:
             hs_id = hs_data['hs_id']
             
             # Structure de l'objet binaire
+            # NOTE: On inclut atomic_ids, is_multi, is_or pour que le C++
+            # puisse gérer la logique AND/OR sans HS_FLAG_COMBINATION
+            # (car COMBINATION n'est pas supporté en HS_MODE_STREAM)
             rule_obj = {
                 'id': r.id,
                 'proto': r.proto,
@@ -575,7 +578,10 @@ class Exporter:
                 'src_ports': src_ports,
                 'dst_ports': dst_ports,
                 'direction': r.direction,
-                'hs_id': hs_id, # Le lien vital !
+                'hs_id': hs_id,  # ID principal (atomique ou logique)
+                'atomic_ids': hs_data.get('atomic_ids', [hs_id]),  # Liste des IDs atomiques
+                'is_multi': hs_data.get('is_multi', False),  # True si multi-pattern
+                'is_or': hs_data.get('is_or', False),  # True=OR, False=AND
                 'action': r.action
             }
             data_to_serialize.append(rule_obj)
