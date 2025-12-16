@@ -396,25 +396,57 @@ class Exporter:
     
     def _sanitize_regex(self, regex):
         """
-        Nettoie et valide une regex pour Hyperscan.
+        Nettoie et valide une regex pour Hyperscan MODE STREAM.
+        
+        CRITIQUES POUR HYPERSCAN STREAM :
+        ==================================
+        1. Les ancres ^ (début) et $ (fin) ne sont PAS supportées
+           - HS_ERROR: "Embedded start anchors not supported"
+           - Solution: Les supprimer (le scan stream n'a pas de notion de "début")
+        
+        2. Les constructions \A et \Z (ancres Perl) idem
+        
+        3. Les lookahead/lookbehind complexes peuvent poser problème
         
         ATTENTION : Cette fonction est appelée UNIQUEMENT pour les PCRE natives
         provenant de Snort (is_regex=True dès le parsing).
-        
-        Les regex fusionnées par ContentEngine sont déjà correctement formées,
-        on ne modifie donc que les cas problématiques spécifiques à Snort.
         """
         if not regex:
             return ''
         
-        # Convertir les espaces échappés Snort '\ ' SEULEMENT au début/fin
-        # (Snort utilise '\ ' pour les espaces significatifs dans content)
-        # On ne touche PAS aux espaces internes des alternations/groupes
+        # ===================================================================
+        # ETAPE 1 : Suppression des ancres (INTERDIT en mode STREAM)
+        # ===================================================================
+        # Ancre de début ^ (non échappée)
+        # On doit éviter de supprimer \^ (caret littéral)
+        regex = re.sub(r'(?<!\\)\^', '', regex)
+        
+        # Ancre de fin $ (non échappée)
+        regex = re.sub(r'(?<!\\)\$', '', regex)
+        
+        # Ancres Perl alternatives
+        regex = re.sub(r'\\A', '', regex)  # \A = début absolu
+        regex = re.sub(r'\\Z', '', regex)  # \Z = fin (avant \n final)
+        regex = re.sub(r'\\z', '', regex)  # \z = fin absolue
+        
+        # ===================================================================
+        # ETAPE 2 : Nettoyage des constructions Snort PCRE
+        # ===================================================================
         
         # Enlever les échappements inutiles de slashes (Snort: \/ -> /)
-        # MAIS seulement dans les PCRE natives, pas dans nos regex fusionnées
         if regex.startswith('/') or '\\/' in regex:
             regex = regex.replace('\\/', '/')
+        
+        # Supprimer les délimiteurs PCRE si présents: /pattern/flags -> pattern
+        if regex.startswith('/') and '/' in regex[1:]:
+            # Format: /regex/flags - extraire le contenu
+            last_slash = regex.rfind('/')
+            if last_slash > 0:
+                regex = regex[1:last_slash]
+        
+        # ===================================================================
+        # ETAPE 3 : Validation basique
+        # ===================================================================
         
         # Vérifier les parenthèses équilibrées
         open_count = regex.count('(') - regex.count('\\(')
