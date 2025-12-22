@@ -297,21 +297,29 @@ class ContentEngine:
                 reverse=True
             )
             
-            # Construction de l'alternation optimale pour Hyperscan
+            # =================================================================
+            # CORRECTION ANTI-FAUX-POSITIFS : Ne JAMAIS générer (?:|...)
+            # =================================================================
+            # Le format (?:|alt1|alt2) permet de matcher juste le préfixe seul,
+            # ce qui crée des faux positifs massifs (ex: "User-Agent:" seul)
+            # 
+            # NOUVELLE STRATÉGIE :
+            # - Si prefix seul EST un pattern : NE PAS le factoriser, skip
+            # - Sinon : factoriser normalement avec (?:alt1|alt2)
+            
             if prefix_is_pattern:
-                if not escaped_suffixes:
-                    # Seulement le préfixe (pas de factorisation utile)
-                    fused_regex = prefix_escaped
-                else:
-                    alternation = "|".join(escaped_suffixes)
-                    # Format: prefix(?:|alt1|alt2) - groupe non-capturant, optionnel
-                    fused_regex = f"{prefix_escaped}(?:|{alternation})"
-            elif escaped_suffixes:
+                # Le préfixe seul est un pattern → Dangereux de factoriser
+                # On abandonne cette factorisation pour éviter (?:|...)
+                for char, child in node.children.items():
+                    self._traverse_and_factorize(child, current_prefix + char, flags, factorized_map)
+                return
+            
+            # Construction de l'alternation SANS alternative vide
+            if escaped_suffixes:
                 alternation = "|".join(escaped_suffixes)
-                # Format: prefix(?:alt1|alt2) - groupe non-capturant obligatoire
                 fused_regex = f"{prefix_escaped}(?:{alternation})"
             else:
-                # Aucune factorisation utile
+                # Pas de suffixes valides → pas de factorisation
                 return
 
             # =================================================================
