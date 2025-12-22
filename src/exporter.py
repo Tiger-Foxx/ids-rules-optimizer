@@ -49,11 +49,13 @@ class Exporter:
         self._export_iptables(firewall_rules, "firewall.sh")
         
         # 2. Export Hyperscan avec LOGIQUE COMBINATOIRE (Deep Path)
+        # hs_map = dictionnaire {rule_id -> {hs_id, atomic_ids, is_multi, is_or, ...}}
         hs_map, atomic_patterns = self._prepare_hyperscan_combinatorial_map(inspection_rules)
         self._export_hyperscan_patterns_combinatorial(hs_map, atomic_patterns, "patterns.txt")
         
         # 3. Export Binaire Contextuel (Deep Path - Logique IP/Port -> ID logique)
-        self._export_binary_config(inspection_rules, hs_map, "rules_config.msgpack")
+        # Combines firewall_rules (pas de patterns) + inspection_rules (avec hs_map pour patterns)
+        self._export_binary_config(firewall_rules, inspection_rules, hs_map, "rules_config.msgpack")
         
         print("[*] Exportation terminée avec succès.")
 
@@ -535,19 +537,18 @@ class Exporter:
         
         return regex
 
-    def _export_binary_config(self, rules: list[RuleVector], hs_map, filename):
+    def _export_binary_config(self, firewall_rules: list[RuleVector], inspection_rules: list[RuleVector], hs_map, filename):
         """
         Sérialise la structure logique en MessagePack pour le C++.
-        Contient : IP Src/Dst, Ports, Proto -> Lien vers ID Hyperscan.
+        Contient : IP Src/Dst, Ports, Proto -> Lien vers ID Hyperscan (si patterns).
+        NOUVEAU: Inclut AUSSI les règles pures L3/L4 sans patterns.
         """
         path = os.path.join(self.output_dir, filename)
         
         data_to_serialize = []
         
-        for r in rules:
-            # On convertit les IPSets et PortSets en listes primitives (strings/ints)
-            # pour que le C++ puisse les lire facilement.
-            
+        # Traiter d'abord les règles firewall pures (pas de patterns)
+        for r in firewall_rules:
             src_cidrs = [str(c) for c in r.src_ips.iter_cidrs()]
             dst_cidrs = [str(c) for c in r.dst_ips.iter_cidrs()]
             
@@ -558,18 +559,8 @@ class Exporter:
             dst_ports = []
             for p in r.dst_ports.iter_cidrs():
                 if hasattr(p, 'first'): dst_ports.append([p.first, p.last])
-
-            # Lien vers Hyperscan (avec protection contre KeyError)
-            hs_data = hs_map.get(r.id)
-            if not hs_data:
-                # Si la règle n'a pas de pattern valide, skip
-                continue
-            hs_id = hs_data['hs_id']
             
-            # Structure de l'objet binaire
-            # NOTE: On inclut atomic_ids, is_multi, is_or pour que le C++
-            # puisse gérer la logique AND/OR sans HS_FLAG_COMBINATION
-            # (car COMBINATION n'est pas supporté en HS_MODE_STREAM)
+            # Règle firewall pure : hs_id=0
             rule_obj = {
                 'id': r.id,
                 'proto': r.proto,
@@ -578,10 +569,55 @@ class Exporter:
                 'src_ports': src_ports,
                 'dst_ports': dst_ports,
                 'direction': r.direction,
-                'hs_id': hs_id,  # ID principal (atomique ou logique)
-                'atomic_ids': hs_data.get('atomic_ids', [hs_id]),  # Liste des IDs atomiques
-                'is_multi': hs_data.get('is_multi', False),  # True si multi-pattern
-                'is_or': hs_data.get('is_or', False),  # True=OR, False=AND
+                'hs_id': 0,  # Pas de pattern
+                'atomic_ids': [],
+                'is_multi': False,
+                'is_or': False,
+                'action': r.action
+            }
+            data_to_serialize.append(rule_obj)
+        
+        # Traiter ensuite les règles d'inspection avec patterns
+        for r in inspection_rules:
+            src_cidrs = [str(c) for c in r.src_ips.iter_cidrs()]
+            dst_cidrs = [str(c) for c in r.dst_ips.iter_cidrs()]
+            
+            src_ports = []
+            for p in r.src_ports.iter_cidrs():
+                if hasattr(p, 'first'): src_ports.append([p.first, p.last])
+                
+            dst_ports = []
+            for p in r.dst_ports.iter_cidrs():
+                if hasattr(p, 'first'): dst_ports.append([p.first, p.last])
+            
+            # Chercher dans hs_map (par rule ID)
+            hs_data = hs_map.get(r.id)
+            
+            if hs_data:
+                # Règle AVEC patterns -> utiliser ses données Hyperscan
+                hs_id = hs_data['hs_id']
+                atomic_ids = hs_data.get('atomic_ids', [hs_id])
+                is_multi = hs_data.get('is_multi', False)
+                is_or = hs_data.get('is_or', False)
+            else:
+                # Règle sans patterns valides -> traiter comme L3/L4 pure
+                hs_id = 0
+                atomic_ids = []
+                is_multi = False
+                is_or = False
+            
+            rule_obj = {
+                'id': r.id,
+                'proto': r.proto,
+                'src_ips': src_cidrs,
+                'dst_ips': dst_cidrs,
+                'src_ports': src_ports,
+                'dst_ports': dst_ports,
+                'direction': r.direction,
+                'hs_id': hs_id,
+                'atomic_ids': atomic_ids,
+                'is_multi': is_multi,
+                'is_or': is_or,
                 'action': r.action
             }
             data_to_serialize.append(rule_obj)

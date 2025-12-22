@@ -497,80 +497,56 @@ class ContentEngine:
 
     def _aggregate_by_network_context(self, rules: List[RuleVector]) -> List[RuleVector]:
         """
-        AGRÉGATION NIVEAU 1 : Fusion par contexte réseau.
+        AGRÉGATION NIVEAU 1 : DÉSACTIVÉE pour les patterns différents.
         
-        Après factorisation Trie, cette agrégation bénéficie de patterns
-        déjà optimisés → expressions OR plus petites.
+        ANALYSE DU PROBLÈME
+        ===================
+        Fusionner des règles avec patterns DIFFÉRENTS en logique OR détruit
+        la sémantique originale des règles Snort.
+        
+        Exemple:
+        - Règle A: Détecte "Netscape overflow" (pattern binaire spécifique)
+        - Règle B: Détecte "SQL injection" (pattern "SELECT")
+        - Règle C: Détecte "XSS" (pattern "<script>")
+        
+        Agrégation OR → (A | B | C) = "si UN pattern matche, DROP"
+        
+        Problèmes:
+        1. Perte de traçabilité (quelle menace a été détectée ?)
+        2. Faux positifs si un pattern est trop générique
+        3. Impossible de tuner une règle sans affecter les autres
+        
+        SOLUTION RETENUE
+        ================
+        - Déduplication exacte : règles avec MÊMES patterns → fusionner IPs ✅
+        - Fusion IP dans phase 3 (Hypercube Convergence) : OK ✅
+        - Agrégation de patterns différents : DÉSACTIVÉE ❌
+        
+        La complexité O(N) est gérée par le CompositeRuleIndex qui pré-filtre
+        par (IP, Port) en O(1). Le nombre de règles n'impacte pas les perfs runtime.
+        
+        GAIN PRÉSERVÉ
+        =============
+        - Phase 3 (Fusion IP) : -57 règles
+        - Déduplication exacte : -770 règles  
+        - Factorisation Trie : -44% patterns atomiques
         """
-        groups = defaultdict(list)
-        
-        for r in rules:
-            if not r.patterns:
-                continue
-            
-            k_dst_pt = tuple(sorted(str(c) for c in r.dst_ports.iter_cidrs()))
-            k_src_pt = tuple(sorted(str(c) for c in r.src_ports.iter_cidrs()))
-            
-            sig = (r.proto, k_src_pt, k_dst_pt, r.direction, r.action)
-            groups[sig].append(r)
-        
-        results = []
-        
-        for sig, group in groups.items():
-            if len(group) == 1:
-                results.append(group[0])
-            else:
-                merged = self._merge_rules_with_different_patterns(group)
-                results.append(merged)
-        
-        return results
+        # Retourner les règles sans agrégation de patterns différents
+        # La déduplication exacte (mêmes patterns) est déjà faite dans _deduplicate_exact()
+        print(f"    [INFO] Agrégation patterns différents DÉSACTIVÉE (préservation sémantique)")
+        print(f"    [INFO] Déduplication exacte + Fusion IP restent actives")
+        return rules
 
     def _merge_rules_with_different_patterns(self, rules: List[RuleVector]) -> RuleVector:
         """
-        Fusionne des règles ayant le même contexte réseau mais patterns différents.
+        FONCTION DÉSACTIVÉE - Préservation sémantique.
         
-        Sémantique : OR (si un matche → action)
+        Cette fonction fusionnait des règles avec patterns DIFFÉRENTS en OR.
+        Problème : cela détruit la sémantique originale des règles Snort.
+        
+        Gardée pour référence historique, mais ne doit plus être appelée.
         """
-        base = rules[0]
-        
-        # Collecter tous les patterns uniques (déjà factorisés)
-        seen = set()
-        all_patterns = []
-        
-        for r in rules:
-            for p in r.patterns:
-                p_key = (p.string_val, p.is_regex, tuple(sorted(p.modifiers.items())) if p.modifiers else ())
-                if p_key not in seen:
-                    seen.add(p_key)
-                    all_patterns.append(p)
-        
-        # Fusionner les IPs (union)
-        new_src_ips = netaddr.IPSet()
-        new_dst_ips = netaddr.IPSet()
-        
-        for r in rules:
-            new_src_ips.update(r.src_ips)
-            new_dst_ips.update(r.dst_ips)
-        
-        # Marquer pour génération OR dans l'exporter
-        if all_patterns:
-            if not all_patterns[0].modifiers:
-                all_patterns[0].modifiers = {}
-            all_patterns[0].modifiers['_aggregated_or'] = True
-        
-        return RuleVector(
-            id=base.id,
-            original_text=f"AGGREGATED_CONTEXT ({len(rules)} rules, {len(all_patterns)} patterns)",
-            proto=base.proto,
-            src_ips=new_src_ips,
-            src_ports=base.src_ports,
-            dst_ips=new_dst_ips,
-            dst_ports=base.dst_ports,
-            direction=base.direction,
-            established=base.established,
-            tcp_flags=base.tcp_flags,
-            icmp_type=base.icmp_type,
-            icmp_code=base.icmp_code,
-            action=base.action,
-            patterns=all_patterns
+        raise NotImplementedError(
+            "Fusion de patterns différents désactivée. "
+            "Utilisez _deduplicate_exact() pour fusionner règles avec mêmes patterns."
         )
