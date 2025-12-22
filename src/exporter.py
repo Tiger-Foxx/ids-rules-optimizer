@@ -293,6 +293,12 @@ class Exporter:
             print(f"[WARN] Pattern rejeté (parenthèses déséquilibrées): {regex[:80]}...")
             return None
         
+        # =================================================================
+        # VALIDATION ANTI-FAUX-POSITIFS : Patterns trop courts/permissifs
+        # =================================================================
+        if not self._validate_pattern_specificity(regex):
+            return None  # Silencieux car nombreux
+        
         # Détermination des flags
         flags = ''
         modifiers_str = str(p.modifiers).lower() if p.modifiers else ''
@@ -333,6 +339,51 @@ class Exporter:
             i += 1
         
         return depth == 0  # True si toutes les parenthèses sont fermées
+    
+    def _validate_pattern_specificity(self, regex: str) -> bool:
+        """
+        Rejette les patterns trop courts ou trop permissifs qui causent des faux positifs.
+        
+        Patterns dangereux :
+        - Moins de 4 caractères significatifs
+        - Commencent par \\x0A ou \\x0D avec alternative vide (?:|...)
+        - Patterns qui sont juste des caractères simples (0, @, .)
+        """
+        # Liste des patterns trop génériques à rejeter
+        DANGEROUS_PATTERNS = [
+            r'^\\x0[aAdD]\(?:\?:\|',  # \x0A(?:|...) - matche tout HTTP
+            r'^\\x0[aAdD]$',           # Juste un newline
+            r'^\.$',                    # Juste un point
+            r'^0$',                     # Juste un zéro
+            r'^@$',                     # Juste un @
+            r'^@@$',                    # Juste @@
+            r'^\\x[0-9a-fA-F]{2}$',    # Juste un caractère hex
+        ]
+        
+        import re as regex_re
+        for dangerous in DANGEROUS_PATTERNS:
+            if regex_re.match(dangerous, regex):
+                return False
+        
+        # Calculer la longueur "significative" (sans les métacaractères)
+        # On enlève les séquences d'échappement, les quantificateurs, etc.
+        significant = regex_re.sub(r'\\x[0-9a-fA-F]{2}', 'X', regex)  # Hex -> X
+        significant = regex_re.sub(r'\\[.+*?{}\[\]()^$|]', '', significant)  # Escapes
+        significant = regex_re.sub(r'[.*+?{}\[\]()^$|]', '', significant)  # Métacaractères
+        
+        # Minimum 3 caractères significatifs
+        if len(significant) < 3:
+            return False
+        
+        # =================================================================
+        # REJETER les patterns avec alternative vide (?:|...)
+        # Ces patterns matchent "la partie avant OU (suite de l'alternative)"
+        # Ex: \x0A(?:|Content-Length) matche juste \x0A seul = faux positifs
+        # =================================================================
+        if '(?:|' in regex:
+            return False
+        
+        return True
     
     def _export_hyperscan_patterns_combinatorial(self, hs_map, atomic_patterns, filename):
         """
