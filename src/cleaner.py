@@ -23,6 +23,12 @@ class RuleCleaner:
             "dsize",            # Taille de paquet (facile mais souvent lié aux stats)
             "isdataat"          # Vérification de curseur
         ]
+        
+        # 3. SIDs BLACKLISTÉS (Règles qui bloquent les outils de test)
+        # Ces règles détectent des User-Agents légitimes comme malveillants
+        self.BLACKLISTED_SIDS = [
+            "51642",  # Bloque User-Agent: curl (Osx.Trojan.Gmera)
+        ]
 
     def analyze_rule(self, line):
         """
@@ -34,6 +40,11 @@ class RuleCleaner:
         # 1. Ignorer commentaires/vides
         if not line_lower or line_lower.startswith('#'):
             return False, "Ignored"
+
+        # 2. Vérification : SID blacklisté
+        for sid in self.BLACKLISTED_SIDS:
+            if f"sid:{sid};" in line_lower:
+                return False, f"Blacklisted (sid:{sid})"
 
         # 2. Vérification : Stats de Flux (Flowbits...)
         for kw in self.STATEFUL_KEYWORDS:

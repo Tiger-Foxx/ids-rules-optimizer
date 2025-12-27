@@ -291,11 +291,20 @@ class ContentEngine:
                 suffixes.remove("")
 
             # Échappement et tri des suffixes (plus long d'abord pour matching gourmand)
+            # FILTRE CRITIQUE : Exclure les suffixes trop courts (< 15 chars)
+            # Les suffixes courts comme "-Agent:" matchent tout le trafic HTTP
+            MIN_SUFFIX_LEN = 15
             escaped_suffixes = sorted(
-                list(set(re.escape(s) for s in suffixes if s)), 
+                list(set(re.escape(s) for s in suffixes if s and len(s) >= MIN_SUFFIX_LEN)), 
                 key=len, 
                 reverse=True
             )
+            
+            # Si pas assez de suffixes longs, abandonner cette factorisation
+            if len(escaped_suffixes) < self.MIN_BRANCHING_FACTOR:
+                for char, child in node.children.items():
+                    self._traverse_and_factorize(child, current_prefix + char, flags, factorized_map)
+                return
             
             # =================================================================
             # CORRECTION ANTI-FAUX-POSITIFS : Ne JAMAIS générer (?:|...)
