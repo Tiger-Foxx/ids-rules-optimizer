@@ -96,9 +96,16 @@ class ContentEngine:
 
     def optimize(self, rules: List[RuleVector]) -> List[RuleVector]:
         """
-        Pipeline d'optimisation principal avec FACTORISATION TRIE GLOBALE.
+        Pipeline d'optimisation SANS fusion Trie (évite les faux positifs).
+        
+        Conserve :
+        - Déduplication exacte des patterns identiques
+        - Agrégation par contexte réseau (IP/Port)
+        
+        Désactivé :
+        - Fusion Trie (cause des faux positifs par mélange de sémantiques)
         """
-        print(f"[*] Démarrage de l'Optimisation Sémantique (Factorisation Trie Globale)...")
+        print(f"[*] Démarrage de l'Optimisation Sémantique (Mode Conservatif)...")
         
         # Filtrer les règles avec patterns
         rules_with_patterns = [r for r in rules if r.patterns]
@@ -108,53 +115,40 @@ class ContentEngine:
         multi_content_rules = [r for r in rules_with_patterns if len(r.patterns) > 1]
         print(f"    - Règles multi-content (AND logique) : {len(multi_content_rules)}")
 
-        # =================================================================
-        # PHASE 1 & 2 : EXTRACTION, NORMALISATION ET SÉGRÉGATION
-        # =================================================================
-        atomic_patterns = self._extract_and_normalize_patterns(rules_with_patterns)
-        initial_count = len(atomic_patterns)
-        print(f"    - Patterns atomiques uniques extraits : {initial_count}")
-
-        simple_patterns, complex_patterns = self._segregate_patterns(atomic_patterns)
-        print(f"    - Candidats Trie (littéraux simples) : {len(simple_patterns)}")
-        print(f"    - Patterns complexes (PCRE) : {len(complex_patterns)}")
+        # Compter les patterns initiaux
+        initial_patterns = set()
+        for r in rules_with_patterns:
+            for p in r.patterns:
+                initial_patterns.add((p.string_val, str(p.modifiers)))
+        print(f"    - Patterns uniques avant déduplication : {len(initial_patterns)}")
 
         # =================================================================
-        # PHASE 3 : FACTORISATION TRIE
+        # FUSION TRIE DÉSACTIVÉE - Cause des faux positifs
         # =================================================================
-        factorized_map = self._factorize_patterns(simple_patterns)
-        
-        # Calcul du gain réel
-        unique_fused = set()
-        for key, fused_pattern in factorized_map.items():
-            unique_fused.add(id(fused_pattern))
-        
-        patterns_factorized = len(factorized_map)
-        patterns_after_fusion = len(unique_fused)
-        remaining_simple = len(simple_patterns) - patterns_factorized
-        
-        final_count = remaining_simple + patterns_after_fusion + len(complex_patterns)
-        reduction = initial_count - final_count
-        percent = (reduction / initial_count * 100) if initial_count > 0 else 0
-        
-        print(f"    >>> FACTORISATION TRIE :")
-        print(f"        - Patterns fusionnes : {patterns_factorized} -> {patterns_after_fusion} groupes")
-        print(f"        - Patterns non fusionnés : {remaining_simple}")
-        print(f"    >>> GAIN REEL : {initial_count} -> {final_count} patterns (-{percent:.1f}%)")
+        print(f"    [INFO] Fusion Trie DÉSACTIVÉE (évite les faux positifs)")
+        print(f"    [INFO] Seule la déduplication exacte est appliquée")
 
         # =================================================================
-        # PHASE 4 : RÉINJECTION
+        # PHASE 1 : DÉDUPLICATION EXACTE
         # =================================================================
-        updated_rules = self._reinject_patterns(rules_with_patterns, factorized_map)
-
-        # =================================================================
-        # PHASE 5 : DÉDUPLICATION ET AGRÉGATION FINALE
-        # =================================================================
-        deduplicated_rules = self._deduplicate_exact(updated_rules)
+        deduplicated_rules = self._deduplicate_exact(rules_with_patterns)
         print(f"    - Après déduplication exacte : {len(deduplicated_rules)}")
 
+        # =================================================================
+        # PHASE 2 : AGRÉGATION PAR CONTEXTE RÉSEAU
+        # =================================================================
         final_rules = self._aggregate_by_network_context(deduplicated_rules)
         print(f"    - Règles finales (après agrégation contextuelle) : {len(final_rules)}")
+
+        # Stats finales
+        final_patterns = set()
+        for r in final_rules:
+            for p in r.patterns:
+                final_patterns.add((p.string_val, str(p.modifiers)))
+        
+        reduction = len(initial_patterns) - len(final_patterns)
+        percent = (reduction / len(initial_patterns) * 100) if initial_patterns else 0
+        print(f"    >>> GAIN : {len(initial_patterns)} -> {len(final_patterns)} patterns uniques (-{percent:.1f}%)")
 
         return final_rules
 
