@@ -96,37 +96,25 @@ class ContentEngine:
 
     def optimize(self, rules: List[RuleVector]) -> List[RuleVector]:
         """
-        Pipeline d'optimisation SANS fusion Trie (évite les faux positifs).
+        Pipeline d'optimisation avec FUSION SÛRE.
         
-        Conserve :
-        - Déduplication exacte des patterns identiques
-        - Agrégation par contexte réseau (IP/Port)
-        
-        Désactivé :
-        - Fusion Trie (cause des faux positifs par mélange de sémantiques)
+        Stratégie :
+        1. Déduplication exacte des patterns identiques
+        2. Fusion SÛRE : patterns avec préfixe commun ≥50% de leur longueur
+        3. Agrégation par contexte réseau (IP/Port)
         """
-        print(f"[*] Démarrage de l'Optimisation Sémantique (Mode Conservatif)...")
+        print(f"[*] Démarrage de l'Optimisation Sémantique (Fusion Sûre)...")
         
         # Filtrer les règles avec patterns
         rules_with_patterns = [r for r in rules if r.patterns]
         print(f"    - Règles avec patterns : {len(rules_with_patterns)}")
         
         # Stats initiales
-        multi_content_rules = [r for r in rules_with_patterns if len(r.patterns) > 1]
-        print(f"    - Règles multi-content (AND logique) : {len(multi_content_rules)}")
-
-        # Compter les patterns initiaux
         initial_patterns = set()
         for r in rules_with_patterns:
             for p in r.patterns:
                 initial_patterns.add((p.string_val, str(p.modifiers)))
-        print(f"    - Patterns uniques avant déduplication : {len(initial_patterns)}")
-
-        # =================================================================
-        # FUSION TRIE DÉSACTIVÉE - Cause des faux positifs
-        # =================================================================
-        print(f"    [INFO] Fusion Trie DÉSACTIVÉE (évite les faux positifs)")
-        print(f"    [INFO] Seule la déduplication exacte est appliquée")
+        print(f"    - Patterns uniques initiaux : {len(initial_patterns)}")
 
         # =================================================================
         # PHASE 1 : DÉDUPLICATION EXACTE
@@ -135,10 +123,24 @@ class ContentEngine:
         print(f"    - Après déduplication exacte : {len(deduplicated_rules)}")
 
         # =================================================================
-        # PHASE 2 : AGRÉGATION PAR CONTEXTE RÉSEAU
+        # PHASE 2 : FUSION SÛRE (préfixe commun ≥50%)
         # =================================================================
-        final_rules = self._aggregate_by_network_context(deduplicated_rules)
-        print(f"    - Règles finales (après agrégation contextuelle) : {len(final_rules)}")
+        fused_rules = self._safe_prefix_fusion(deduplicated_rules)
+        
+        # Compter les patterns après fusion
+        patterns_after_fusion = set()
+        for r in fused_rules:
+            for p in r.patterns:
+                patterns_after_fusion.add((p.string_val, str(p.modifiers)))
+        
+        fusion_gain = len(initial_patterns) - len(patterns_after_fusion)
+        print(f"    - Après fusion sûre : {len(patterns_after_fusion)} patterns (-{fusion_gain})")
+
+        # =================================================================
+        # PHASE 3 : AGRÉGATION PAR CONTEXTE RÉSEAU
+        # =================================================================
+        final_rules = self._aggregate_by_network_context(fused_rules)
+        print(f"    - Règles finales : {len(final_rules)}")
 
         # Stats finales
         final_patterns = set()
@@ -148,9 +150,123 @@ class ContentEngine:
         
         reduction = len(initial_patterns) - len(final_patterns)
         percent = (reduction / len(initial_patterns) * 100) if initial_patterns else 0
-        print(f"    >>> GAIN : {len(initial_patterns)} -> {len(final_patterns)} patterns uniques (-{percent:.1f}%)")
+        print(f"    >>> GAIN TOTAL : {len(initial_patterns)} -> {len(final_patterns)} patterns (-{percent:.1f}%)")
 
         return final_rules
+
+    def _safe_prefix_fusion(self, rules: List[RuleVector]) -> List[RuleVector]:
+        """
+        Fusion SÛRE : fusionne les patterns qui partagent un préfixe commun
+        d'au moins 50% de leur longueur minimale.
+        
+        Exemple :
+        - "GET /admin/dashboard.php" + "GET /admin/settings.php"
+        - Préfixe commun : "GET /admin/" (11 chars)
+        - Longueur min : 25 chars
+        - Ratio : 44% < 50% => PAS fusionné
+        
+        - "attack_payload_variant1" + "attack_payload_variant2"
+        - Préfixe commun : "attack_payload_variant" (22 chars)
+        - Longueur min : 23 chars
+        - Ratio : 95% >= 50% => FUSIONNÉ
+        """
+        MIN_PREFIX_RATIO = 0.5  # Le préfixe doit faire au moins 50% du pattern
+        MIN_PREFIX_LEN = 15     # Le préfixe doit faire au moins 15 caractères
+        MIN_GROUP_SIZE = 3      # Il faut au moins 3 patterns pour fusionner
+        
+        # Extraire tous les patterns uniques avec leurs règles
+        pattern_to_rules: Dict[str, List[RuleVector]] = {}
+        for rule in rules:
+            for p in rule.patterns:
+                if not p.is_regex:  # Seulement les littéraux
+                    key = p.string_val
+                    if key not in pattern_to_rules:
+                        pattern_to_rules[key] = []
+                    pattern_to_rules[key].append(rule)
+        
+        # Trouver les groupes de patterns avec préfixe commun long
+        patterns_list = list(pattern_to_rules.keys())
+        fused_patterns = {}  # old_pattern -> new_pattern (ou None si pas fusionné)
+        processed = set()
+        
+        for i, p1 in enumerate(patterns_list):
+            if p1 in processed:
+                continue
+            
+            # Trouver tous les patterns qui partagent un préfixe long avec p1
+            group = [p1]
+            for j, p2 in enumerate(patterns_list):
+                if i == j or p2 in processed:
+                    continue
+                
+                # Calculer le préfixe commun
+                prefix_len = 0
+                for c1, c2 in zip(p1, p2):
+                    if c1 == c2:
+                        prefix_len += 1
+                    else:
+                        break
+                
+                min_len = min(len(p1), len(p2))
+                ratio = prefix_len / min_len if min_len > 0 else 0
+                
+                if prefix_len >= MIN_PREFIX_LEN and ratio >= MIN_PREFIX_RATIO:
+                    group.append(p2)
+            
+            # Si le groupe est assez grand, fusionner
+            if len(group) >= MIN_GROUP_SIZE:
+                # Trouver le préfixe commun à TOUT le groupe
+                common_prefix = group[0]
+                for p in group[1:]:
+                    new_prefix = ""
+                    for c1, c2 in zip(common_prefix, p):
+                        if c1 == c2:
+                            new_prefix += c1
+                        else:
+                            break
+                    common_prefix = new_prefix
+                
+                if len(common_prefix) >= MIN_PREFIX_LEN:
+                    # Créer le pattern fusionné
+                    suffixes = [p[len(common_prefix):] for p in group]
+                    suffixes = [s for s in suffixes if s]  # Enlever les vides
+                    
+                    if suffixes:
+                        # Échapper pour regex
+                        escaped_prefix = re.escape(common_prefix)
+                        escaped_suffixes = sorted([re.escape(s) for s in suffixes], key=len, reverse=True)
+                        fused_regex = f"{escaped_prefix}(?:{'|'.join(escaped_suffixes)})"
+                        
+                        for p in group:
+                            fused_patterns[p] = fused_regex
+                            processed.add(p)
+        
+        # Créer les nouvelles règles avec patterns fusionnés
+        if not fused_patterns:
+            print(f"        [INFO] Aucun groupe de patterns similaires trouvé")
+            return rules
+        
+        print(f"        [INFO] {len(fused_patterns)} patterns fusionnés en groupes")
+        
+        # Appliquer les fusions
+        updated_rules = []
+        for rule in rules:
+            new_patterns = []
+            for p in rule.patterns:
+                if p.string_val in fused_patterns:
+                    # Remplacer par le pattern fusionné
+                    new_patterns.append(Pattern(
+                        string_val=fused_patterns[p.string_val],
+                        is_regex=True,
+                        modifiers=p.modifiers
+                    ))
+                else:
+                    new_patterns.append(p)
+            
+            rule.patterns = new_patterns
+            updated_rules.append(rule)
+        
+        return updated_rules
 
     # =========================================================================
     # PHASE 1 & 2 : EXTRACTION ET SÉGRÉGATION
