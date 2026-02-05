@@ -3,72 +3,61 @@ from tqdm import tqdm
 
 class RuleCleaner:
     def __init__(self):
-        # 1. CE QU'ON REJETTE ABSOLUMENT (Stats de flux & Mémoire inter-paquets)
+        # 1. State/Memory keywords (ignored)
         self.STATEFUL_KEYWORDS = [
-            "flowbits",         # Mémoire entre plusieurs paquets
-            "threshold",        # Compteurs de temps
-            "detection_filter", # Compteurs de temps
-            "stream_size",      # Taille du flux global
-            "tag",              # Tagging de session
-            "rate_filter",      # Limite de débit
+            "flowbits",
+            "threshold",
+            "detection_filter",
+            "stream_size",
+            "tag",
+            "rate_filter",
         ]
 
-        # 2. CE QU'ON REJETTE POUR SIMPLIFIER LE MOTEUR C++ (Calculs complexes)
-        # Pour la PoC, on se concentre sur l'optimisation Pattern Matching + IP
+        # 2. Complex logic keywords (ignored for PoC)
         self.COMPLEX_LOGIC_KEYWORDS = [
-            "byte_test",        # Opérations mathématiques sur payload
-            "byte_jump",        # Sauts de pointeur complexes
-            "byte_extract",     # Extraction de variable
-            "ssl_state",        # Analyse protocolaire SSL fine
-            "dsize",            # Taille de paquet (facile mais souvent lié aux stats)
-            "isdataat"          # Vérification de curseur
+            "byte_test",
+            "byte_jump",
+            "byte_extract",
+            "ssl_state",
+            "dsize",
+            "isdataat"
         ]
         
-        # 3. SIDs BLACKLISTÉS (Règles qui bloquent les outils de test)
-        # Ces règles détectent des User-Agents légitimes comme malveillants
+        # 3. Blacklisted SIDs
         self.BLACKLISTED_SIDS = [
-            "51642",  # Bloque User-Agent: curl (Osx.Trojan.Gmera)
+            "51642",  # Block curl User-Agent
         ]
 
     def analyze_rule(self, line):
         """
-        Analyse intelligente d'une règle.
-        Retourne: (Keep/Reject, Raison)
+        Smart rule analysis.
+        Returns: (Keep/Reject, Reason)
         """
         line_lower = line.lower().strip()
         
-        # 1. Ignorer commentaires/vides
+        # 1. Ignore comments
         if not line_lower or line_lower.startswith('#'):
             return False, "Ignored"
 
-        # 2. Vérification : SID blacklisté
+        # 2. Blacklisted SIDs
         for sid in self.BLACKLISTED_SIDS:
             if f"sid:{sid};" in line_lower:
                 return False, f"Blacklisted (sid:{sid})"
 
-        # 2. Vérification : Stats de Flux (Flowbits...)
+        # 3. Stateful keywords
         for kw in self.STATEFUL_KEYWORDS:
             if kw in line_lower:
-                # Cas particulier : on accepte 'flow', mais pas 'flowbits'
-                # Le mot "flow:" est géré plus bas, ici on cherche les mots exacts
                 return False, f"Stateful ({kw})"
 
-        # 3. Vérification : Logique Trop Complexe pour PoC
+        # 4. Complex logic
         for kw in self.COMPLEX_LOGIC_KEYWORDS:
             if kw in line_lower:
                 return False, f"Too Complex ({kw})"
 
-        # 4. Analyse fine de l'option 'flow'
-        # On accepte "flow:to_server", "flow:established", etc.
-        # On refuse si ça contient des trucs bizarres (rare)
-        # Ici, comme on a déjà viré les stats, la présence de "flow:" est généralement OK.
-        
-        # 5. Vérification : La règle a-t-elle du contenu ou est-ce une règle IP pure ?
-        # On garde tout le reste.
         return True, "OK"
 
     def process_file(self, input_path, output_path):
-        print(f"[*] Démarrage du nettoyage intelligent sur : {input_path}")
+        print(f"[*] Starting smart cleaning on: {input_path}")
         
         stats = {
             "total": 0,
@@ -82,7 +71,7 @@ class RuleCleaner:
             lines = f.readlines()
             stats["total"] = len(lines)
 
-            for line in tqdm(lines, desc="Analyse des règles", unit="règle"):
+            for line in tqdm(lines, desc="Analyzing rules", unit="rule"):
                 keep, reason = self.analyze_rule(line)
                 
                 if keep:
@@ -91,11 +80,9 @@ class RuleCleaner:
                 else:
                     if reason != "Ignored":
                         stats["rejected"] += 1
-                        # Compter les raisons pour le rapport
                         cat = reason.split('(')[0].strip()
                         stats["details"][cat] = stats["details"].get(cat, 0) + 1
 
-        # Écriture
         with open(output_path, 'w', encoding='utf-8') as f_out:
             f_out.writelines(kept_rules)
 
@@ -103,12 +90,11 @@ class RuleCleaner:
 
     def _print_stats(self, stats, output_path):
         print("\n" + "="*60)
-        print("RAPPORT DE NETTOYAGE INTELLIGENT")
+        print("CLEANING REPORT")
         print("="*60)
-        print(f"Total lu          : {stats['total']}")
-        print(f"REJETE (Stats)    : {stats['details'].get('Stateful', 0)} rules (flowbits, threshold...)")
-        print(f"REJETE (Complexe) : {stats['details'].get('Too Complex', 0)} rules (byte_test, ssl_state...)")
+        print(f"Total read        : {stats['total']}")
+        print(f"REJECTED (Stats)  : {stats['details'].get('Stateful', 0)} rules")
+        print(f"REJECTED (Complex): {stats['details'].get('Too Complex', 0)} rules")
         print("-" * 40)
-        print(f"[OK] CONSERVE     : {stats['kept']} regles")
-        print("   (Contient: IP, Ports, Content, PCRE, flow:to_server...)")
+        print(f"[OK] KEPT         : {stats['kept']} rules")
         print("="*60)

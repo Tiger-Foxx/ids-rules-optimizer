@@ -1,502 +1,241 @@
-# IDS Rules Optimizer: Structural & Semantic Optimization for Network Filtering
+# FoxOptimizer
 
-**Repository:** [https://github.com/Tiger-Foxx/ids-rules-optimizer](https://github.com/Tiger-Foxx/ids-rules-optimizer)  
-**Lead Author:** Tiger-Foxx (Research Project)  
-**Technology:** Python 3 (Pre-processing) / C++ (Runtime Engine - *Coming Soon*)  
-**Status:** 🟢 Optimization Module (Core) Completed & Validated.
-
----
-
-## Table of Contents
-
-1.  [Introduction and Scientific Context](#1-introduction-and-scientific-context)
-2.  [Objectives and Research Hypothesis](#2-objectives-and-research-hypothesis)
-3.  [Global System Architecture](#3-global-system-architecture)
-4.  [Optimization Methodology (The Core)](#4-optimization-methodology-the-core)
-    *   [4.1. Intelligent Cleaning](#41-intelligent-cleaning)
-    *   [4.2. Vector Modeling](#42-vector-modeling)
-    *   [4.3. Geometric Fusion (IP Engine)](#43-geometric-fusion-ip-engine)
-    *   [4.4. Semantic Fusion (Content Engine)](#44-semantic-fusion-content-engine)
-5.  [Technical Details and Algorithms](#5-technical-details-and-algorithms)
-6.  [Results and Metrics](#6-results-and-metrics)
-7.  [Interface with the C++ Engine](#7-interface-with-the-c-engine)
-8.  [Limitations and Accepted Trade-offs](#8-limitations-and-accepted-trade-offs)
-9.  [Installation and Usage](#9-installation-and-usage)
+**Role**: Static Analysis & Compilation Toolchain for Network Security Rules.  
+**Language**: Python 3  
+**Input**: Snort/Suricata Rule Files (`.rules`)  
+**Output**: Optimized binary artifacts consumed by **FoxEngine** (C++ runtime).
 
 ---
 
-## 1. Introduction and Scientific Context
+## 1. Project Layout
 
-### The "Security Stacking" Problem
-In modern infrastructures, packets traverse a sequential chain of security devices:
-`L3/L4 Firewall` $\rightarrow$ `IDS/IPS (Snort/Suricata)` $\rightarrow$ `WAF (ModSecurity)`
-
-Each device adds:
-*   Processing latency (parsing, matching).
-*   Memory copies (Zero-Copy impossible on a heterogeneous chain).
-*   Redundant CPU consumption (checking 3 times if the IP is not blacklisted).
-
-**Consequence:** A drastic drop in useful throughput (up to -80% observed) and increased latency (Jitter).
-
-### The "Early Rejection" Concept
-The idea is to move the blocking decision (`DROP`) as far upstream as possible.
-If a packet is destined to be rejected by the IPS (step 2) because of its content, why waste CPU cycles in the Firewall (step 1)?
-
-Our project aims to **mathematically unify** all these rules into a single decision graph, placed at the head of the chain.
+```
+optimizer/
+├── main.py                 # Entry point. Orchestrates all 5 phases sequentially.
+├── src/
+│   ├── cleaner.py          # Phase 1: Rule filtering (stateful/complex keyword rejection).
+│   ├── parser.py           # Phase 2: Snort syntax parser + variable resolution.
+│   ├── models.py           # Data structures (RuleVector, Pattern).
+│   ├── ip_engine.py        # Phase 3: Dimensional reduction (IP/Port merging).
+│   ├── content_engine.py   # Phase 4: Semantic deduplication of content patterns.
+│   └── exporter.py         # Phase 5: Artifact generation (patterns.txt, msgpack, firewall.sh).
+├── inputs/                 # Source rule files (e.g. snort3-community.rules).
+├── outputs/                # Generated artifacts.
+│   ├── patterns.txt
+│   ├── rules_config.msgpack
+│   ├── firewall.sh
+│   └── cleaned_baseline.rules
+└── requirements.txt
+```
 
 ---
 
-## 2. Objectives and Research Hypothesis
+## 2. Pipeline Overview
 
-### Hypothesis
-It is possible to compile a heterogeneous set of rules (Firewall + IPS) into a **unified data structure** (Trees + Automata) that is:
-1.  More compact (fewer rules to check).
-2.  Faster (logarithmic complexity $O(\log N)$ instead of linear $O(N)$).
-3.  Strictly equivalent in terms of security (no induced false negatives).
+The optimizer operates as a 5-phase compilation pipeline. Each phase transforms the rule set, progressively reducing it from raw text to compact binary artifacts.
 
-### Why This Isn't Just "Better Snort"?
-Engines like Snort optimize *matching* (finding a pattern), but not the *logical structure* of the rules.
-*   **Snort:** Reads 10 similar rules as 10 distinct entities.
-*   **Our Optimizer:** Merges these 10 rules into 1 complex mathematical entity.
+```
+ Phase 1          Phase 2          Phase 3           Phase 4          Phase 5
+┌─────────┐    ┌──────────┐    ┌─────────────┐    ┌───────────┐    ┌──────────┐
+│ Cleaner │───▶│  Parser  │───▶│  IP Engine  │───▶│  Content  │───▶│ Exporter │
+│         │    │          │    │             │    │  Engine   │    │          │
+│ .rules  │    │ RuleVector│   │ Merge IPs   │    │ Dedup     │    │ 3 files  │
+│ → clean │    │ objects   │   │ Merge Ports │    │ patterns  │    │ output   │
+└─────────┘    └──────────┘    └─────────────┘    └───────────┘    └──────────┘
 
-**Consequence:** Our optimized rules **ARE NO LONGER** compatible with Snort. They are intended for a dedicated C++ engine (`FoxEngine`) capable of understanding these merged structures.
+Input: snort3-community.rules (31,000+ lines)
+Output: ~3100 optimized rules, ~4370 unique patterns
+```
 
 ---
 
-## 3. Global System Architecture
+## 3. Phase Details
 
-The project is divided into two distinct components to separate intelligence (slow) from execution (fast).
+### 3.1 Phase 1 — Cleaning (`cleaner.py`)
 
-### A. The Preprocessor (Python) - *This repository*
-*   **Role:** Rule compiler ("Offline").
-*   **Input:** Standard text files (`snort3-community.rules`).
-*   **Processing:** Semantic analysis, Set algebra, Graph theory.
-*   **Output:** Optimized binary artifacts and scripts.
-*   **Constraint:** No time limit (can take 10 min to compile 10k rules).
+Reads the raw `.rules` file line by line and makes a keep/reject decision for each rule.
 
-### B. The Runtime Engine (C++) - *Future repository*
-*   **Role:** Real-time execution ("Online").
-*   **Input:** Artifacts generated by Python.
-*   **Technologies:** `NFQUEUE` (interception), `Hyperscan` (Intel Regex), `mmap` (binary loading).
-*   **Constraint:** Absolute performance (Zero-Copy).
+**Rejection Criteria:**
 
----
+| Category | Keywords | Reason |
+|----------|----------|--------|
+| Stateful | `flowbits`, `threshold`, `detection_filter`, `stream_size`, `tag`, `rate_filter` | Require cross-packet state memory that FoxEngine does not implement. |
+| Complex Logic | `byte_test`, `byte_jump`, `byte_extract`, `ssl_state`, `dsize`, `isdataat` | Require arithmetic operations on payload that are outside the PoC scope. |
+| Blacklisted SIDs | `sid:51642` | Blocks benign User-Agents (e.g. `curl`) used by test tools. |
 
-## 4. Optimization Methodology (The Core)
+**Output**: `cleaned_baseline.rules` — a filtered version containing only rules expressible by the FoxEngine (IP/Port + content/pcre patterns).
 
-Here's how we transform 4000 rules into 300 efficient entities.
+### 3.2 Phase 2 — Parsing (`parser.py`)
 
-### 4.1. Intelligent Cleaning (`src/cleaner.py`)
-To guarantee performance, we limit ourselves to **Stateless** filtering (no inter-packet memory) for this PoC.
-
-*   **Removal:**
-    *   `flowbits`, `tag`: Require storing state for each flow (memory ++).
-    *   `threshold`, `detection_filter`: Require temporal counters.
-    *   `byte_test`, `byte_jump`: Require a complex arithmetic VM.
-*   **Retention:**
-    *   `flow:to_server/client`: Kept as deducible from TCP reassembly.
-    *   `flags`, `itype`: Kept (critical for security).
-
-### 4.2. Vector Modeling (`src/models.py`)
-We abandon character strings. Each rule becomes a mathematical vector:
-$$ R = \{ Proto, \text{SrcIPs}, \text{DstIPs}, \text{SrcPorts}, \text{DstPorts}, \text{Flags}, \text{Patterns} \} $$
-
-*   IPs are managed as **Mathematical Sets** (`netaddr.IPSet`).
-*   `$EXTERNAL_NET` becomes `UNIVERSE \setminus \{192.168.0.0/16, ...\}`.
-*   This allows calculating exact intersections and unions.
-
-### 4.3. Geometric Fusion (IP Engine): "Hypercube Convergence"
-This is our multidimensional spatial reduction algorithm.
-
-#### The Dangerous "Cartesian Product" Problem
-Naively merging two rules can create implicit permissions:
+Parses each cleaned rule using a strict regex matching the Snort header format:
 ```
-R1: 10.0.0.1 → 192.168.1.10:80 (DROP)
-R2: 10.0.0.2 → 192.168.1.20:80 (DROP)
-Naïve Fusion: {10.0.0.1, 10.0.0.2} → {192.168.1.10, 192.168.1.20}:80
-→ FLAW: Now blocks 10.0.0.1 → 192.168.1.20 (not requested!)
+action proto src_ip src_port -> dst_ip dst_port (options)
 ```
 
-#### Our Solution: Iterative Unidimensional Fusion
-We merge **only one dimension** at a time, keeping all others **strictly invariant**.
+**Variable Resolution:**
+Standard Snort variables are resolved at parse time:
+| Variable | Resolution |
+|----------|------------|
+| `$HOME_NET` | `192.168.0.0/16, 10.0.0.0/8` |
+| `$EXTERNAL_NET` | `!$HOME_NET` (complement) |
+| `$HTTP_PORTS` | `80` |
+| `$HTTP_SERVERS` | `= $HOME_NET` |
+| `any` | `0.0.0.0/0` (IP) or `0:65535` (port) |
 
-**Strict Grouping Signature:**
-```python
-# To merge Source IPs, we require:
-signature = (proto, tcp_flags, icmp_type, dst_ips, dst_ports, src_ports, direction, action, patterns)
-# If two rules have this identical signature → We can merge their src_ips safely
+In `--test-mode`, `$EXTERNAL_NET` resolves to `any` (required for internal CloudLab testing where attacker and target share the same subnet).
+
+**IP/Port Representation:**
+All IP addresses are stored as `netaddr.IPSet` objects, enabling efficient set operations (union, difference, intersection) during the merging phase. Ports use the same structure, abusing `IPRange(0, 65535)` as integer ranges.
+
+**Option Parsing:**
+The `_parse_options()` method extracts from the rule body:
+- `content:"..."` → `Pattern(string_val=..., is_regex=False)`
+- `pcre:"/.../flags"` → `Pattern(string_val=..., is_regex=True)`
+- Content modifiers (`nocase`, `depth`, `offset`, `distance`, `within`, `fast_pattern`) are attached to the last `Pattern` object's `modifiers` dict.
+- `flow:to_server,established` → `rule.direction`, `rule.established`
+- `flags:S` → `rule.tcp_flags` (preserved to prevent merging SYN probes with normal traffic)
+- `sid:NNN` → `rule.id`
+
+**Output**: A list of `RuleVector` objects.
+
+### 3.3 Phase 3 — Dimensional Reduction (`ip_engine.py`)
+
+The IP Engine implements an iterative fixed-point merging algorithm called **Hypercube Convergence**.
+
+**Step 1 — Segregation:**
+Rules are split into two groups:
+- **Pure Firewall** (`rule.patterns == []`): Rules that only check IP/Port (no content inspection needed). These will be offloaded to `iptables`.
+- **Deep Inspection** (`rule.patterns != []`): Rules that require payload scanning via Hyperscan.
+
+**Step 2 — Merging Loop (per group):**
+The loop runs 4 merge passes per iteration:
+1. **Merge Source IPs**: Rules sharing identical `(proto, dst_ip, src_port, dst_port, direction, action, patterns, tcp_flags)` are merged by taking the union of their `src_ip` sets.
+2. **Merge Destination IPs**: Same, but merges `dst_ip` sets.
+3. **Merge Destination Ports**: Same, but merges `dst_port` sets.
+4. **Merge Source Ports**: Same, but merges `src_port` sets.
+
+The loop repeats until the rule count stabilizes (fixed point). This typically converges in 2-3 iterations.
+
+**Security Invariant:** The `tcp_flags`, `icmp_type`, and `icmp_code` fields are part of the merge signature. This prevents merging a SYN scan detection rule with general traffic rules.
+
+**Output**: Two lists — `firewall_rules[]` and `inspection_rules[]`.
+
+### 3.4 Phase 4 — Semantic Content Optimization (`content_engine.py`)
+
+Operates only on `inspection_rules[]`:
+1. **Exact Deduplication**: Rules with identical pattern sets are collapsed.
+2. **Contextual Aggregation**: Rules sharing the same network context (proto, IP, ports) but different patterns are merged into a single rule with an OR pattern list (flagged with `_aggregated_or = True`).
+
+Trie-based prefix factorization (e.g. `"GET /admin"` + `"GET /config"` → `"GET /(admin|config)"`) is implemented but **disabled** in the current version to avoid false positives from semantic mixing.
+
+**Output**: `final_inspection_rules[]`.
+
+### 3.5 Phase 5 — Export (`exporter.py`)
+
+Generates the 3 artifact files consumed by FoxEngine.
+
+#### 3.5.1 `patterns.txt` — Hyperscan Database
+
+**Structure:** Two sections in a single file.
+
+**Section 1 — Atomic Patterns:**
+Each unique pattern across all rules is assigned a globally unique integer ID. Duplicate patterns (even from different rules) share the same ID.
+
+Format: `ID:/regex/flags`
+
+For `content:` patterns (literals), the string is `re.escape()`-d before emission. Snort hex sequences (`|XX XX|`) are converted to `\xHH` notation. PCRE patterns are sanitized (anchors `^$` removed, back-references rejected, lookahead/lookbehind rejected).
+
+Flags: `i` = caseless, `s` = dotall, `m` = multiline, `H` = singlematch.
+
+**Section 2 — Combinatorial Expressions:**
+For rules with multiple patterns, a logical expression is emitted using Hyperscan's `HS_FLAG_COMBINATION` syntax:
+- `100001:/(1 & 2 & 5)/c` — AND: All atomic patterns must match.
+- `100002:/(3 | 7 | 12)/c` — OR: At least one atomic pattern must match (aggregated rules).
+
+IDs in this section start at 100000 to avoid collision with atomic IDs.
+
+**Important:** The C++ engine skips lines with flag `c` during Hyperscan compilation. These expressions are parsed separately and the AND/OR logic is evaluated in C++ after `hs_scan()` returns the list of matched atomic IDs.
+
+#### 3.5.2 `rules_config.msgpack` — Binary Rule Logic
+
+A MessagePack-serialized array. Each element is a map with these keys:
+
 ```
-
-**Convergence Algorithm (Fixed Point):**
-```
-Iteration 1:
-  - Src_IP Pass:  3185 → 3150 rules (-35)
-  - Dst_IP Pass:  3150 → 3145 rules (-5)
-  - Dst_Port Pass: 3145 → 3140 rules (-5)
-  - Src_Port Pass: 3140 → 3137 rules (-3)
-  Total: -48 rules
-
-Iteration 2:
-  - Src_IP Pass:  3137 → 3137 rules (0)
-  → Fixed Point reached: Cannot merge further without risk.
-```
-
-**Mathematical Guarantee:** The algorithm always converges in $O(k)$ iterations where $k$ is the number of dimensions (typically 2-4 iterations).
-
-### 4.4. Semantic Fusion (Content Engine): "Hybrid Trie Factorization"
-This is the attack signature compression algorithm using lexical analysis.
-
-#### Hybrid Architecture (Security + Performance)
-The module separates rules into two categories to avoid breaking complex inspection logic.
-
-**1. Simple Rules (Single Pattern) → Trie Factorization**
-```
-Input:
-  R1: content:"admin.php"    (IP: 10.0.0.1 → 192.168.1.50:80)
-  R2: content:"admin.html"   (IP: 10.0.0.2 → 192.168.1.50:80)
-  R3: content:"admin_panel"  (IP: 10.0.0.3 → 192.168.1.50:80)
-
-Algorithm:
-  1. Trie Construction:
-       [a][d][m][i][n]
-                   ├─ [.][p][h][p] (R1)
-                   ├─ [.][h][t][m][l] (R2)
-                   └─ [_][p][a][n][e][l] (R3)
-  
-  2. Common Prefix Detection: "admin"
-  
-  3. Regex Factorization:
-     Optimized Pattern: /admin(\\.php|\\.html|_panel)/
-     Merged IP: {10.0.0.1, 10.0.0.2, 10.0.0.3} → 192.168.1.50:80
-
-Output: 1 rule instead of 3 (-66%)
-```
-
-**2. Complex Rules (Multi-Patterns) → Strict Hashing**
-```
-Input:
-  R1: content:"POST"; content:"/admin/delete"; http_method;
-  R2: content:"GET";  content:"/admin/delete"; http_method;
-
-Decision:
-  → Do NOT merge (different pattern sequences)
-  → Risk of false positive if only "/admin/delete" is kept
-
-Output: 2 rules kept (Security priority)
-```
-
-#### Tuning Parameters
-```python
-self.min_prefix_len = 4  # Only factorize if prefix ≥ 4 characters
-                         # Avoids: "get" ∪ "got" → /(ge|go)t/ (inefficient)
-```
-
-#### Measured Real Gain
-On `snort3-community.rules`: **3137 → 1835 rules (-41.5%)** thanks to the Trie.
-
----
-
-## 5. Technical Details and Algorithms
-
-### Security Management (Avoiding the "Cartesian Product")
-A classic error in firewall optimization is merging Sources and Destinations simultaneously.
-
-**Classic Error Example:**
-```
-R1: A → B (Port 80)
-R2: C → D (Port 80)
-Naïve Fusion: {A,C} → {B,D} (Port 80)
-→ FLAW: Allows A → D and C → B (never requested!)
-```
-
-**Our Protection:**
-```python
-# In ip_engine.py, line 77-85
-if target == 'src_ip':
-    # To merge Sources, we include dst_ips in the signature
-    sig = (proto, tcp_flags, dst_ips, dst_ports, src_ports, ...)
-    # → We merge Sources ONLY if Destinations are identical
-```
-
-**Proof by Construction:**
-- The algorithm iterates on one single dimension at a time
-- Other dimensions are **frozen** in the hash signature
-- A fusion `{A,C} → {B,D}` is **mathematically impossible** because B≠D causes the grouping to fail
-
-### Data Architecture: Why `netaddr.IPSet`?
-Instead of IP lists, we use a mathematical library.
-
-**Advantages:**
-```python
-# Automatic CIDR merging for adjacent ranges
-ips = IPSet(['192.168.1.0/24', '192.168.2.0/24'])
-# → Auto-optimized to 192.168.0.0/23 (memory gain)
-
-# Implicit overlap management
-rules = [
-    IPSet(['10.0.0.0/8']),    # Broad Rule
-    IPSet(['10.1.1.0/24'])    # Specific Rule (subset)
-]
-union = IPSet.union(*rules)
-# → Automatic subsumption: 10.0.0.0/8 absorbs 10.1.1.0/24
-```
-
-**Complexity:** Union/intersection operations are $O(\log N)$ thanks to the internal tree of `netaddr`.
-
-### The "MessagePack" Format
-Why not JSON or XML?
-
-**Performance Comparison:**
-| Format | File Size | Parse Time (C++) | Binary Support |
-|--------|-----------|------------------|----------------|
-| JSON   | 2.4 MB    | ~150 ms          | ❌ (Base64 required) |
-| XML    | 3.8 MB    | ~280 ms          | ❌              |
-| **MessagePack** | **0.9 MB** | **~8 ms** | ✅ (native) |
-
-**Concrete Example:**
-```python
-# Python (Writing)
-data = {
-    "rule_id": 1,
-    "src_ips": ["192.168.1.0/24", "10.0.0.1"],
-    "pattern_id": 42,
-    "action": "drop"
-}
-msgpack.dump(data, f)
-```
-
-```cpp
-// C++ (Reading - Zero-Copy)
-msgpack::object_handle oh = msgpack::unpack(buffer, size);
-auto rule = oh.get().as<Rule>(); // Instantaneous
-```
-
-**Critical Advantage:** The C++ engine can `mmap()` the file directly into RAM without parsing. Pointers point into the mapped file (saves memory copies).
-
----
-
-## 6. Results and Metrics
-
-**Test Dataset:** `snort3-community.rules` (2025 Version)
-
-### Complete Reduction Pipeline
-
-| Phase | Input | Output | Reduction | Technique |
-|-------|-------|--------|-----------|-----------|
-| **Raw** | 4017 | - | - | Original file |
-| **1. Cleaning** | 4017 | 3185 | -20.7% | Stateful Elimination |
-| **2. Parse** | 3185 | 3185 | 0% | Vectorization |
-| **3. IP Fusion** | 3185 | 3137 | -1.5% | Hypercube Convergence |
-| **4. Pattern Fusion** | 3137 | 1835 | -41.5% | Trie Factorization |
-| **TOTAL** | **4017** | **1835** | **-54.3%** | Complete pipeline |
-
-### Breakdown by Type
-
-| Category | Count | Destination | Comment |
-|----------|-------|-------------|---------|
-| **Pure Firewall** | 85 | `firewall.sh` | Kernel Offloading (iptables) |
-| **IPS (Inspection)** | 1750 | `patterns.txt` + `msgpack` | Requires Hyperscan |
-
-### Qualitative Analysis
-
-**Why only -1.5% in Phase 3 (IP)?**
-- Snort Community rules are already very specific (few IP duplicates).
-- Most rules target `$HOME_NET` → `$EXTERNAL_NET` (identical signature, but different patterns).
-- IP gain will be much more significant on enterprise rules (redundant IP Blacklists).
-
-**Why -41.5% in Phase 4 (Patterns)?**
-- Many attack variants (e.g., 50 rules for "SQLi" with similar patterns).
-- The Trie efficiently factorizes these attack families.
-
-### Performance Projection (Theoretical Model)
-
-Considering a naïve linear complexity $O(N)$ for matching:
-```
-Baseline:  3185 rules → 3185 comparisons/packet
-Optimized:  1835 rules → 1835 comparisons/packet
-CPU Gain: -42.4% (proportional to the number of rules)
-```
-
-**In Reality (with tree structures):** The gain will be higher because:
-- Firewall rules (85) execute in $O(1)$ via `iptables` (kernel hash table).
-- Hyperscan patterns benefit from factorized regex (fewer state transitions).
-
----
-
-## 7. Interface with the C++ Engine
-
-The C++ engine (`FoxEngine`) is designed to be "dumb and fast". It doesn't think, it executes the orders contained in the artifacts.
-
-### The 3 Delivered Files
-
-1.  **`firewall.sh` (Bash Script)**
-    *   **Role:** Kernel Offloading.
-    *   **Action:** Configures `iptables` to silently block known IPs/Ports before they even reach user space.
-    *   **Gain:** Zero CPU cost for the application.
-
-2.  **`patterns.txt` (Text)**
-    *   **Role:** Hyperscan database.
-    *   **Format:** `ID:/regex/flags`.
-    *   **Content:** Factorized regex (e.g., `1:/virus(A|B)/`).
-
-3.  **`rules_config.msgpack` (Binary)**
-    *   **Role:** Logical Brain.
-    *   **Content:** Decision trees. "If Src IP $\in$ {A,B,C} and Port=80 $\rightarrow$ Then scan with pattern ID 1".
-    *   **Usage:** Loaded into RAM at startup.
-
-### Comparison Protocol (Benchmark)
-To prove the effectiveness of our optimization, we will use the **SAME C++ engine** with two configurations:
-
-1.  **Baseline Mode (Control):**
-    *   Deactivate fusion in Python.
-    *   Output: 3185 unitary rules.
-    *   C++ loads 3185 entries.
-2.  **Optimized Mode (Experiment):**
-    *   Activate fusion.
-    *   Output: 1835 merged rules.
-    *   C++ loads 1835 entries.
-
-**Measurement:** Difference in throughput (Gbps) and Latency (µs) on test traffic (e.g., `tcpreplay`). The difference will be purely attributable to our algorithm.
-
----
-
-## 8. Limitations and Accepted Trade-offs
-
-1.  **Snort Incompatibility:** Our optimized rules can no longer be read by Snort. This is an accepted choice to break performance limits.
-2.  **Loss of Granular Traceability:** If a packet is blocked by a merged "Web Malware" rule, we won't necessarily know if it was "Malware A" or "Malware B".
-    *   *Justification:* In operational defense, the important thing is to block the threat, not necessarily to know its exact baptism name at the microsecond level.
-3.  **Stateless Scope:** Complex attacks requiring long-term temporal correlation (e.g., slow Brute Force) are not covered by this PoC.
-
----
-
-## 9. Installation and Usage
-
-### Prerequisites
-*   **Python:** 3.10+ (for f-strings and pattern matching)
-*   **Libraries:**
-    ```bash
-    pip install netaddr msgpack tqdm
-    ```
-    - `netaddr`: IP set algebra (automatic CIDR merge)
-    - `msgpack`: High-performance binary serialization
-    - `tqdm`: Progress bars (optional, cosmetic)
-
-### Quick Installation
-```bash
-git clone https://github.com/Tiger-Foxx/ids-rules-optimizer.git
-cd ids-rules-optimizer
-pip install -r requirements.txt
-```
-
-### Standard Usage
-```bash
-# 1. Download Snort Community rules (example)
-wget https://www.snort.org/downloads/community/snort3-community-rules.tar.gz
-tar -xzf snort3-community-rules.tar.gz
-cp snort3-community-rules/snort3-community.rules inputs/
-
-# 2. Run optimization
-python main.py --rules snort3-community.rules
-
-# 3. Retrieve artifacts
-ls -lh outputs/
-# → firewall.sh (Kernel Script)
-# → patterns.txt (Hyperscan Base)
-# → rules_config.msgpack (Binary Logic)
-```
-
-### Advanced Options
-```bash
-# Disable Stateful cleaning (keep flowbits, etc.)
-python main.py --rules custom.rules --no-clean
-
-# Debug Mode (displays detailed fusions)
-python main.py --rules test.rules --verbose
-
-# Export JSON instead of MessagePack (for debug)
-python main.py --rules test.rules --format json
-```
-
-### Output Structure
-
-**1. `firewall.sh` - iptables Script**
-```bash
-#!/bin/bash
-# Auto-generated by IDS Rules Optimizer
-# Date: 2025-11-22
-
-# Rule 1: IP Reputation Blocking (Malware C2)
-iptables -A INPUT -s 192.0.2.0/24 -j DROP
-iptables -A INPUT -s 198.51.100.0/24 -j DROP
-
-# Rule 85: Automated Scanner Blocking
-iptables -A INPUT -p tcp --dport 22 -m recent --name SSH --rcheck --seconds 60 --hitcount 4 -j DROP
-```
-
-**2. `patterns.txt` - Hyperscan Base**
-```
-# Format: ID:/regex/flags
-1:/admin\.(php|html|asp)/i
-2:/\x90{10,}/  # NOP Sled Detection
-3:/(union|select).+(from|where)/i  # SQL Injection
-```
-
-**3. `rules_config.msgpack` - Binary Logic**
-```python
-# Example Structure (human format, actual=binary)
 {
-  "rules": [
-    {
-      "id": 1,
-      "src_ips": ["0.0.0.0/0"],  # ANY
-      "dst_ips": ["192.168.1.50/32"],
-      "dst_ports": [80, 443],
-      "proto": "tcp",
-      "pattern_ids": [1, 3],  # References to patterns.txt
-      "action": "alert"
-    }
-  ]
+  "id":         uint32,       # Rule SID
+  "proto":      string,       # "tcp" | "udp" | "icmp" | "ip"
+  "src_ips":    [string],     # List of CIDR strings: ["10.0.0.0/8"]
+  "dst_ips":    [string],     # List of CIDR strings
+  "src_ports":  [[u16, u16]], # List of [start, end] ranges
+  "dst_ports":  [[u16, u16]], # List of [start, end] ranges
+  "direction":  string,       # "to_server" | "to_client" | "any"
+  "hs_id":      uint32,       # Hyperscan pattern ID (0 = pure L3/L4, no scan needed)
+  "atomic_ids": [uint32],     # For multi-pattern rules: list of atomic IDs
+  "is_multi":   bool,         # true if rule has > 1 pattern
+  "is_or":      bool,         # true = OR semantics (aggregated), false = AND (original Snort)
+  "action":     string        # "alert" or "drop"
 }
 ```
 
-### Integration with the C++ Engine (Future)
-```cpp
-// Pseudo-code of the runtime engine
-#include <msgpack.hpp>
-#include <hs/hs.h>
+Pure firewall rules have `hs_id = 0`, `atomic_ids = []`, `is_multi = false`.
 
-int main() {
-    // 1. Load logic
-    auto rules = msgpack::unpack(mmap("rules_config.msgpack"));
-    
-    // 2. Compile Hyperscan
-    hs_database_t* db = compile_from_file("patterns.txt");
-    
-    // 3. Hook NFQUEUE
-    nfq_handle* h = nfq_open();
-    nfq_create_queue(h, 0, &packet_callback, nullptr);
-    
-    // 4. Infinite loop
-    while (1) {
-        nfq_handle_packet(h); // Inspects each packet
-    }
-}
-```
+The C++ `Loader` deserializes this directly into `vector<RuleDefinition>` using msgpack-cxx's `MSGPACK_DEFINE_MAP` macro, then converts string CIDRs to binary `Cidr{network, mask}` structs and inserts each rule into the `CompositeRuleIndex`.
 
-### Post-Optimization Verification
-```bash
-# Count rules before/after
-wc -l inputs/snort3-community.rules
-# → 4017
+#### 3.5.3 `firewall.sh` — Kernel Offload Script
 
-wc -l outputs/patterns.txt
-# → 1750
-
-# Verify MessagePack validity
-python -c "import msgpack; print(msgpack.unpack(open('outputs/rules_config.msgpack', 'rb')))"
-# → Should display structure without error
-```
+A generated Bash script that:
+1. Creates a custom iptables chain `FOX_FILTER`.
+2. For rules with > 3 source CIDRs, creates shared `ipset` hash:net sets to avoid iptables rule explosion.
+3. Emits one `iptables -A FOX_FILTER ...` command per firewall rule, using `-m multiport --dports` for port lists (max 15 per rule, chunked automatically).
+4. The script is `chmod 755` and can be run by the FoxEngine `Loader` at startup (currently disabled in test mode).
 
 ---
 
-*This project is an academic contribution to the study of high-performance data structures for cybersecurity.*
+## 4. Data Model (`models.py`)
+
+### RuleVector
+The central data structure representing a parsed and optimized rule:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `int` | Rule SID |
+| `original_text` | `str` | Raw rule text (or "FUSED ..." after merging) |
+| `proto` | `str` | Protocol |
+| `src_ips` | `netaddr.IPSet` | Source IP set |
+| `dst_ips` | `netaddr.IPSet` | Destination IP set |
+| `src_ports` | `netaddr.IPSet` | Source port ranges (abusing IPSet for integer ranges) |
+| `dst_ports` | `netaddr.IPSet` | Destination port ranges |
+| `direction` | `str` | Flow direction |
+| `established` | `bool` | Requires established TCP connection |
+| `tcp_flags` | `str or None` | TCP flags constraint (e.g. "S" for SYN) |
+| `icmp_type` | `str or None` | ICMP type |
+| `icmp_code` | `str or None` | ICMP code |
+| `patterns` | `List[Pattern]` | Content/PCRE patterns |
+| `action` | `str` | "alert" or "drop" |
+
+### Pattern
+| Field | Type | Description |
+|-------|------|-------------|
+| `string_val` | `str` | Pattern string |
+| `is_regex` | `bool` | True for PCRE, False for literal content |
+| `negated` | `bool` | Negated match |
+| `modifiers` | `dict` | Snort modifiers (nocase, depth, offset, etc.) |
+
+`Pattern` implements `__hash__` and `__eq__` (excluding internal keys prefixed with `_`) to enable deduplication via sets and dict keys.
+
+---
+
+## 5. Usage
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Standard run
+python3 main.py --rules snort3-community.rules
+
+# Test mode (EXTERNAL_NET = any, for internal network testing)
+python3 main.py --rules snort3-community.rules --test-mode
+```
+
+**Output:** All artifacts are written to `outputs/`.

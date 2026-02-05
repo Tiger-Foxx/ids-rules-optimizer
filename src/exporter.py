@@ -5,32 +5,15 @@ from .models import RuleVector, Pattern
 
 class Exporter:
     """
-    Exportateur de règles vers formats C++ (Hyperscan + msgpack).
+    Rules exporter for C++ engine (Hyperscan + msgpack).
     
-    IMPLÉMENTATION LOGIQUE COMBINATOIRE HYPERSCAN (Recommandation IA Expert)
-    ========================================================================
+    Hyperscan Combinatorial Implementation:
+    Uses HS_FLAG_COMBINATION to handle AND logic at engine level.
     
-    Pour les règles multi-content (sémantique AND Snort), on utilise
-    HS_FLAG_COMBINATION d'Hyperscan plutôt qu'une alternation (A|B|C).
-    
-    Avantages :
-    - Sémantique EXACTE : pas de faux positifs
-    - Hyperscan gère la logique AND en interne (performance optimale)
-    - Pas besoin de vérification secondaire en C++
-    
-    Format patterns.txt :
-    ---------------------
-    # Section 1 : Patterns atomiques (regex individuels)
+    Format patterns.txt:
     1:/pattern_A/is
     2:/pattern_B/is
-    3:/pattern_C/s
-    
-    # Section 2 : Expressions logiques combinatoires
-    100001:(1 & 2)/c        <- Règle 1 : A AND B
-    100002:(3)/c            <- Règle 2 : C seul
-    100003:(1 & 2 & 3)/c    <- Règle 3 : A AND B AND C
-    
-    Le C++ référence les IDs logiques (100001, 100002...) dans rules_config.msgpack.
+    100001:(1 & 2)/c
     """
     
     def __init__(self, output_dir):
@@ -38,30 +21,27 @@ class Exporter:
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         
-        # Compteurs pour IDs uniques
         self._atomic_id_counter = 1
-        self._logical_id_start = 100000  # IDs logiques commencent à 100000
+        self._logical_id_start = 100000
 
     def export_all(self, firewall_rules, inspection_rules):
-        print(f"[*] Démarrage de l'exportation vers {self.output_dir}...")
+        print(f"[*] Starting export to {self.output_dir}...")
         
         # 1. Export iptables (Fast Path)
         self._export_iptables(firewall_rules, "firewall.sh")
         
-        # 2. Export Hyperscan avec LOGIQUE COMBINATOIRE (Deep Path)
-        # hs_map = dictionnaire {rule_id -> {hs_id, atomic_ids, is_multi, is_or, ...}}
+        # 2. Export Hyperscan (Deep Path)
         hs_map, atomic_patterns = self._prepare_hyperscan_combinatorial_map(inspection_rules)
         self._export_hyperscan_patterns_combinatorial(hs_map, atomic_patterns, "patterns.txt")
         
-        # 3. Export Binaire Contextuel (Deep Path - Logique IP/Port -> ID logique)
-        # Combines firewall_rules (pas de patterns) + inspection_rules (avec hs_map pour patterns)
+        # 3. Export Contextual Binary Config (Deep Path)
         self._export_binary_config(firewall_rules, inspection_rules, hs_map, "rules_config.msgpack")
         
-        print("[*] Exportation terminée avec succès.")
+        print("[*] Export completed successfully.")
 
     def _export_iptables(self, rules: list[RuleVector], filename):
         """
-        Génère un script bash pour iptables + ipset.
+        Generates bash script for iptables + ipset.
         """
         path = os.path.join(self.output_dir, filename)
         
@@ -149,33 +129,24 @@ class Exporter:
             os.chmod(path, 0o755)
         except: pass
         
-        print(f"    -> Généré : {filename} ({len(rules)} règles)")
+        print(f"    -> Generated : {filename} ({len(rules)} rules)")
 
     def _prepare_hyperscan_combinatorial_map(self, rules: list[RuleVector]):
         """
-        Implémente la LOGIQUE COMBINATOIRE HYPERSCAN.
+        Implements Hyperscan Combinatorial Logic.
         
-        STRATÉGIE :
-        ===========
-        1. Patterns atomiques uniques (chaque pattern = 1 ID)
-        2. Pour chaque règle :
-           - Si AGRÉGÉE (flag _aggregated_or) : expression OR (ID1 | ID2 | ID3)
-             → Si UN pattern matche → action (fusion de règles différentes)
-           - Si MULTI-CONTENT originale : expression AND (ID1 & ID2 & ID3)
-             → TOUS les patterns doivent matcher (sémantique Snort)
-           - Si MONO-PATTERN : expression simple (ID)
-        
-        Résultat : ZÉRO faux positifs, sémantique exacte !
+        Strategy:
+        1. Unique Atomic Patterns
+        2. Aggregation:
+           - Aggregated rules: OR (ID1 | ID2)
+           - Multi-content rules: AND (ID1 & ID2)
         """
-        # Dictionnaire des patterns atomiques uniques
         unique_atomic_patterns = {}
         atomic_id_counter = 1
         
-        # Mapping règle -> données Hyperscan
         hs_map = {}
         logical_id_counter = self._logical_id_start
         
-        # Compteurs pour stats
         or_count = 0
         and_count = 0
         
@@ -183,16 +154,13 @@ class Exporter:
             if not r.patterns:
                 continue
             
-            # Détecter si c'est une règle AGRÉGÉE (OR) ou multi-content originale (AND)
             is_aggregated_or = False
             if r.patterns and r.patterns[0].modifiers:
                 is_aggregated_or = r.patterns[0].modifiers.get('_aggregated_or', False)
             
-            # Collecter les IDs atomiques pour cette règle
             rule_atomic_ids = []
             
             for p in r.patterns:
-                # Traitement du pattern
                 processed = self._process_pattern_atomic(p)
                 if not processed:
                     continue
@@ -200,7 +168,6 @@ class Exporter:
                 regex, flags = processed['expr'], processed['flags']
                 pattern_key = (regex, flags)
                 
-                # Assignation d'un ID atomique unique (déduplication)
                 if pattern_key not in unique_atomic_patterns:
                     unique_atomic_patterns[pattern_key] = {
                         'id': atomic_id_counter,
@@ -214,118 +181,103 @@ class Exporter:
             if not rule_atomic_ids:
                 continue
             
-            # Génération de l'expression logique
             sorted_ids = sorted(list(set(rule_atomic_ids)))
             
             if len(sorted_ids) > 1:
                 if is_aggregated_or:
-                    # Règle AGRÉGÉE : OR (si UN matche → action)
+                    # OR expression
                     expression = "(" + " | ".join(map(str, sorted_ids)) + ")"
                     or_count += 1
                 else:
-                    # Règle MULTI-CONTENT originale : AND (TOUS doivent matcher)
+                    # AND expression
                     expression = "(" + " & ".join(map(str, sorted_ids)) + ")"
                     and_count += 1
                 
-                # Assignation de l'ID logique final (avec COMBINATION)
                 logical_id = logical_id_counter
                 logical_id_counter += 1
                 
                 hs_map[r.id] = {
                     'hs_id': logical_id,
                     'expression': expression,
-                    'flags': 'c',  # HS_FLAG_COMBINATION obligatoire
+                    'flags': 'c', 
                     'atomic_ids': sorted_ids,
                     'is_or': is_aggregated_or,
                     'is_multi': True
                 }
             else:
-                # Un seul pattern : PAS de COMBINATION, référence directe à l'atomique
-                # Hyperscan n'accepte pas "(1)" comme expression logique
                 single_atomic_id = sorted_ids[0]
                 
                 hs_map[r.id] = {
-                    'hs_id': single_atomic_id,  # Référence directe à l'ID atomique
-                    'expression': None,  # Pas d'expression combinatoire
-                    'flags': None,  # Pas de flag COMBINATION
+                    'hs_id': single_atomic_id,
+                    'expression': None,
+                    'flags': None, 
                     'atomic_ids': sorted_ids,
                     'is_or': False,
                     'is_multi': False
                 }
         
-        print(f"    - Patterns atomiques uniques : {len(unique_atomic_patterns)}")
-        print(f"    - Expressions logiques : {len(hs_map)}")
-        print(f"    - Regles agregees (OR) : {or_count}")
-        print(f"    - Regles multi-content (AND) : {and_count}")
+        print(f"    - Atomic patterns : {len(unique_atomic_patterns)}")
+        print(f"    - Logical expressions : {len(hs_map)}")
+        print(f"    - Aggregated (OR) : {or_count}")
+        print(f"    - Multi-content (AND) : {and_count}")
         
         return hs_map, unique_atomic_patterns
     
     def _process_pattern_atomic(self, p: Pattern):
         """
-        Traite un pattern individuel pour en faire un pattern atomique Hyperscan.
-        Retourne {'expr': regex, 'flags': flags} ou None si invalide.
+        Process individual pattern for Hyperscan.
         """
         regex = p.string_val
         if not regex:
             return None
         
-        # Nettoyage des modifiers Snort
         regex = self._clean_snort_modifiers(regex)
         
-        # Échappement ou sanitization
         if not p.is_regex:
-            # Content littéral : échapper les métacaractères regex
             regex = re.escape(regex)
         else:
-            # PCRE : nettoyer les constructions problématiques
             regex = self._sanitize_regex(regex)
         
-        # Conversion des séquences hex Snort |XX XX|
         regex = self._convert_hex_pipes(regex)
         
         if not regex:
             return None
         
-        # =================================================================
-        # VALIDATION CRITIQUE : Vérifier les parenthèses équilibrées
-        # =================================================================
+        # Validations
         if not self._validate_parentheses(regex):
-            print(f"[WARN] Pattern rejeté (parenthèses déséquilibrées): {regex[:80]}...")
+            print(f"[WARN] Pattern rejected (unbalanced parens): {regex[:80]}...")
             return None
         
-        # =================================================================
-        # VALIDATION ANTI-FAUX-POSITIFS : Patterns trop courts/permissifs
-        # =================================================================
         if not self._validate_pattern_specificity(regex):
-            return None  # Silencieux car nombreux
+            return None
         
-        # Détermination des flags
+        # Flags determination
         flags = ''
         modifiers_str = str(p.modifiers).lower() if p.modifiers else ''
         
         if 'nocase' in modifiers_str:
             flags += 'i'
         
-        # DOTALL toujours activé pour DPI (. matche aussi \n)
+        # DOTALL always enabled for DPI (. matches \n)
         flags += 's'
         
         return {'expr': regex, 'flags': flags}
     
     def _validate_parentheses(self, regex: str) -> bool:
         """
-        Vérifie que les parenthèses sont équilibrées dans la regex.
+        Verify that parentheses are balanced in the regex.
         
-        Gère les cas échappés : \\( et \\) ne comptent pas.
-        Retourne True si valide, False sinon.
+        Handles escaped cases: \( and \) do not count.
+        Returns True if valid, False otherwise.
         """
         depth = 0
         i = 0
         while i < len(regex):
             char = regex[i]
             
-            # Vérifier si c'est un caractère échappé
+            # Check if it's an escaped character
             if char == '\\' and i + 1 < len(regex):
-                # Skip le caractère échappé
+                # Skip the escaped character
                 i += 2
                 continue
             
@@ -334,30 +286,30 @@ class Exporter:
             elif char == ')':
                 depth -= 1
                 if depth < 0:
-                    return False  # Trop de parenthèses fermantes
+                    return False  # Too many closing parentheses
             
             i += 1
         
-        return depth == 0  # True si toutes les parenthèses sont fermées
+        return depth == 0  # True if all parentheses are closed
     
     def _validate_pattern_specificity(self, regex: str) -> bool:
         """
-        Rejette les patterns trop courts ou trop permissifs qui causent des faux positifs.
+        Rejects patterns that are too short or too permissive causing false positives.
         
-        Patterns dangereux :
-        - Moins de 4 caractères significatifs
-        - Commencent par \\x0A ou \\x0D avec alternative vide (?:|...)
-        - Patterns qui sont juste des caractères simples (0, @, .)
+        Dangerous patterns:
+        - Less than 4 significant characters
+        - Starting with \x0A or \x0D with empty alternative (?:|...)
+        - Patterns that are just single characters (0, @, .)
         """
-        # Liste des patterns trop génériques à rejeter
+        # List of generic patterns to reject
         DANGEROUS_PATTERNS = [
-            r'^\\x0[aAdD]\(?:\?:\|',  # \x0A(?:|...) - matche tout HTTP
-            r'^\\x0[aAdD]$',           # Juste un newline
-            r'^\.$',                    # Juste un point
-            r'^0$',                     # Juste un zéro
-            r'^@$',                     # Juste un @
-            r'^@@$',                    # Juste @@
-            r'^\\x[0-9a-fA-F]{2}$',    # Juste un caractère hex
+            r'^\\x0[aAdD]\(?:\?:\|',  # \x0A(?:|...) - matches all HTTP
+            r'^\\x0[aAdD]$',           # Just a newline
+            r'^\.$',                    # Just a dot
+            r'^0$',                     # Just a zero
+            r'^@$',                     # Just a @
+            r'^@@$',                    # Just @@
+            r'^\\x[0-9a-fA-F]{2}$',    # Just a hex character
         ]
         
         import re as regex_re
@@ -365,20 +317,20 @@ class Exporter:
             if regex_re.match(dangerous, regex):
                 return False
         
-        # Calculer la longueur "significative" (sans les métacaractères)
-        # On enlève les séquences d'échappement, les quantificateurs, etc.
+        # Calculate "significant" length (without metacharacters)
+        # Remove escape sequences, quantifiers, etc.
         significant = regex_re.sub(r'\\x[0-9a-fA-F]{2}', 'X', regex)  # Hex -> X
         significant = regex_re.sub(r'\\[.+*?{}\[\]()^$|]', '', significant)  # Escapes
-        significant = regex_re.sub(r'[.*+?{}\[\]()^$|]', '', significant)  # Métacaractères
+        significant = regex_re.sub(r'[.*+?{}\[\]()^$|]', '', significant)  # Metacharacters
         
-        # Minimum 3 caractères significatifs
+        # Minimum 3 significant characters
         if len(significant) < 3:
             return False
         
         # =================================================================
-        # REJETER les patterns avec alternative vide (?:|...)
-        # Ces patterns matchent "la partie avant OU (suite de l'alternative)"
-        # Ex: \x0A(?:|Content-Length) matche juste \x0A seul = faux positifs
+        # REJECT patterns with empty alternative (?:|...)
+        # These patterns match "the part before OR (rest of alternative)"
+        # Ex: \x0A(?:|Content-Length) matches just \x0A alone = false positives
         # =================================================================
         if '(?:|' in regex:
             return False
@@ -387,15 +339,15 @@ class Exporter:
     
     def _export_hyperscan_patterns_combinatorial(self, hs_map, atomic_patterns, filename):
         """
-        Génère patterns.txt au format COMBINATOIRE Hyperscan.
+        Generates patterns.txt in Hyperscan COMBINATORIAL format.
         
         Format :
         --------
-        # Patterns atomiques
+        # Atomic patterns
         1:/pattern_A/is
         2:/pattern_B/s
         
-        # Expressions logiques (règles)
+        # Logical expressions (rules)
         100000:(1 & 2)/c
         100001:(2)/c
         """
@@ -404,46 +356,46 @@ class Exporter:
         if not hs_map and not atomic_patterns:
             with open(path, 'w') as f:
                 f.write("# No patterns\n")
-            print(f"    -> Généré : {filename} (Vide)")
+            print(f"    -> Generated : {filename} (Empty)")
             return
         
         with open(path, 'w') as f:
-            # Section 1 : Patterns atomiques
+            # Section 1 : Atomic patterns
             f.write("# === ATOMIC PATTERNS (Individual Regex) ===\n")
             
-            # Trier par ID pour stabilité
+            # Sort by ID for stability
             sorted_atomic = sorted(atomic_patterns.values(), key=lambda x: x['id'])
             
             for atomic in sorted_atomic:
-                # Échapper les slashs dans la regex pour le format fichier
+                # Escape slashes in regex for the file format
                 safe_expr = atomic['regex'].replace('/', '\\/')
                 f.write(f"{atomic['id']}:/{safe_expr}/{atomic['flags']}\n")
             
-            # Section 2 : Expressions logiques combinatoires
+            # Section 2 : Logical combinatorial expressions
             f.write("\n# === LOGICAL EXPRESSIONS (Rule Combinations with HS_FLAG_COMBINATION) ===\n")
             
-            # Filtrer seulement les règles avec expression combinatoire (multi-pattern)
-            # Les règles à 1 seul pattern utilisent directement l'ID atomique
+            # Filter only rules with combinatorial expression (multi-pattern)
+            # Rules with 1 pattern use the atomic ID directly
             multi_pattern_rules = [r for r in hs_map.values() if r['is_multi'] and r['expression']]
             
-            # Trier par ID logique pour stabilité
+            # Sort by logical ID for stability
             sorted_rules = sorted(multi_pattern_rules, key=lambda x: x['hs_id'])
             
             for rule_data in sorted_rules:
                 # Format : ID:/expression/c
-                # L'expression est déjà au format (1 & 2 & 3)
+                # Expression is already in format (1 & 2 & 3)
                 f.write(f"{rule_data['hs_id']}:/{rule_data['expression']}/{rule_data['flags']}\n")
         
         single_pattern_count = len(hs_map) - len(sorted_rules)
-        print(f"    -> Genere : {filename} ({len(sorted_atomic)} atomic, {len(sorted_rules)} logical, {single_pattern_count} single-ref)")
+        print(f"    -> Generated : {filename} ({len(sorted_atomic)} atomic, {len(sorted_rules)} logical, {single_pattern_count} single-ref)")
 
     def _clean_snort_modifiers(self, s):
         """
-        Enlève les modifiers Snort qui polluent les chaînes après fusion.
+        Removes Snort modifiers that pollute strings after merging.
         Ex: 'payload",depth 16,nocase' -> 'payload'
         """
-        # Pattern pour les modifiers Snort typiques
-        # Ces modifiers sont souvent après un guillemet fermant
+        # Patterns for typical Snort modifiers
+        # These modifiers are often after a closing quote
         snort_modifiers = [
             r'",\s*depth\s+\d+',
             r'",\s*offset\s+\d+',
@@ -460,145 +412,135 @@ class Exporter:
         for mod in snort_modifiers:
             result = re.sub(mod, '', result, flags=re.IGNORECASE)
         
-        # Nettoyer les guillemets orphelins
+        # Clean orphan quotes
         result = result.strip('"').strip()
         
         return result
     
     def _convert_hex_pipes(self, s):
         """
-        Convertit les séquences hex Snort en notation regex \\xHH.
-        Gère à la fois |XX YY| (non échappé) et \\|XX YY\\| (après re.escape).
-        Gère aussi les espaces échappés (\\ ) et les séquences sans espace (|0D0A|).
+        Converts Snort hex sequences to \xHH regex notation.
+        Handles both |XX YY| (unescaped) and \|XX YY\| (after re.escape).
+        Also handles escaped spaces (\ ) and sequences without spaces (|0D0A|).
         """
         def hex_replacer(match):
             hex_content = match.group(1)
-            # Nettoyer les espaces échappés (après re.escape, ' ' devient '\ ')
+            # Clean escaped spaces (after re.escape, ' ' becomes '\ ')
             hex_content = hex_content.replace('\\ ', ' ')
             
-            # Split par espace ou traiter comme séquence continue
+            # Split by space or treat as continuous sequence
             if ' ' in hex_content:
                 hex_bytes = hex_content.split()
             else:
-                # Séquence continue sans espace: 0D0A -> ['0D', '0A']
+                # Continuous sequence without space: 0D0A -> ['0D', '0A']
                 hex_bytes = [hex_content[i:i+2] for i in range(0, len(hex_content), 2)]
             
-            # Filtrer les entrées valides (exactement 2 caractères hex)
+            # Filter valid entries (exactly 2 hex chars)
             valid_bytes = [b for b in hex_bytes if len(b) == 2 and all(c in '0123456789ABCDEFabcdef' for c in b)]
             if not valid_bytes:
-                return match.group(0)  # Pas de conversion possible
-            # Convertir en \xHH notation
+                return match.group(0)  # No conversion possible
+            # Convert to \xHH notation
             return ''.join([f'\\x{b.upper()}' for b in valid_bytes])
         
-        # Pattern pour matcher après re.escape: \|XX XX\| ou \|XXXX\|
-        # re.escape transforme | en \| (1 backslash + pipe)
-        # En regex raw string: r'\\\|' matche littéralement \|
+        # Pattern to match after re.escape: \|XX XX\| or \|XXXX\|
+        # re.escape transforms | into \| (1 backslash + pipe)
         result = re.sub(r'\\\|([0-9A-Fa-f\\ ]+)\\\|', hex_replacer, s)
-        # Puis le cas non-échappé (pour les pcre natifs): |XX XX|
+        # Then unescaped case (for native pcre): |XX XX|
         result = re.sub(r'\|([0-9A-Fa-f ]+)\|', hex_replacer, result)
         return result
     
     def _sanitize_regex(self, regex):
         """
-        Nettoie et valide une regex pour Hyperscan MODE STREAM.
+        Cleans and validates a regex for Hyperscan STREAM MODE.
         
-        CRITIQUES POUR HYPERSCAN STREAM :
+        CRITICAL FOR HYPERSCAN STREAM:
         ==================================
-        1. Les ancres ^ (début) et $ (fin) ne sont PAS supportées
+        1. Start (^) and end ($) anchors are NOT supported
            - HS_ERROR: "Embedded start anchors not supported"
-           - Solution: Les supprimer (le scan stream n'a pas de notion de "début")
+           - Solution: Remove them (stream scan has no "start" concept)
         
-        2. Les constructions \A et \Z (ancres Perl) idem
+        2. \A and \Z (Perl anchors) are also not supported
         
-        3. Les back-references \1, \2... ne sont PAS supportées
+        3. Back-references \1, \2... are NOT supported
            - HS_ERROR: "Back-references are unsupported"
-           - Solution: Rejeter le pattern entièrement (impossible à convertir)
+           - Solution: Reject the pattern entirely
         
-        4. Les lookahead/lookbehind complexes peuvent poser problème
+        4. Complex lookahead/lookbehind may cause issues
         
-        ATTENTION : Cette fonction est appelée UNIQUEMENT pour les PCRE natives
-        provenant de Snort (is_regex=True dès le parsing).
+        NOTE: This function is called ONLY for native PCRE from Snort.
         
-        Retourne '' (chaîne vide) si le pattern doit être rejeté.
+        Returns '' if pattern should be rejected.
         """
         if not regex:
             return ''
         
         # ===================================================================
-        # ETAPE 0 : Détection des constructions NON SUPPORTÉES (REJET)
+        # STEP 0 : UNSUPPORTED constructions detection (REJECTION)
         # ===================================================================
         
-        # Back-references \1, \2, ..., \9 (non échappées)
-        # Pattern: \1 à \9 mais pas \\1 (qui serait un backslash + chiffre littéral)
+        # Back-references \1, \2, ..., \9 (unescaped)
         if re.search(r'(?<!\\)\\[1-9]', regex):
-            print(f"[WARN] Pattern rejete (back-reference): {regex[:60]}...")
+            print(f"[WARN] Pattern rejected (back-reference): {regex[:60]}...")
             return ''
         
-        # Zero-width assertions (lookahead / lookbehind) - NON SUPPORTEES
-        # (?=...) positive lookahead
-        # (?!...) negative lookahead
-        # (?<=...) positive lookbehind
-        # (?<!...) negative lookbehind
+        # Zero-width assertions (lookahead / lookbehind) - UNSUPPORTED
         if re.search(r'\(\?[=!]|\(\?<[=!]', regex):
-            print(f"[WARN] Pattern rejete (zero-width assertion): {regex[:60]}...")
+            print(f"[WARN] Pattern rejected (zero-width assertion): {regex[:60]}...")
             return ''
         
         # ===================================================================
-        # ETAPE 1 : Suppression des ancres (INTERDIT en mode STREAM)
+        # STEP 1 : Anchors removal (FORBIDDEN in STREAM mode)
         # ===================================================================
-        # Ancre de début ^ (non échappée)
-        # On doit éviter de supprimer \^ (caret littéral)
+        # Start anchor ^ (unescaped)
         regex = re.sub(r'(?<!\\)\^', '', regex)
         
-        # Ancre de fin $ (non échappée)
+        # End anchor $ (unescaped)
         regex = re.sub(r'(?<!\\)\$', '', regex)
         
-        # Ancres Perl alternatives
-        regex = re.sub(r'\\A', '', regex)  # \A = début absolu
-        regex = re.sub(r'\\Z', '', regex)  # \Z = fin (avant \n final)
-        regex = re.sub(r'\\z', '', regex)  # \z = fin absolue
+        # Alternative Perl anchors
+        regex = re.sub(r'\\A', '', regex)  # \A = absolute start
+        regex = re.sub(r'\\Z', '', regex)  # \Z = end (before final \n)
+        regex = re.sub(r'\\z', '', regex)  # \z = absolute end
         
         # ===================================================================
-        # ETAPE 2 : Nettoyage des constructions Snort PCRE
+        # STEP 2 : Snort PCRE cleanup
         # ===================================================================
         
-        # Enlever les échappements inutiles de slashes (Snort: \/ -> /)
+        # Remove useless slash escapes (Snort: \/ -> /)
         if regex.startswith('/') or '\\/' in regex:
             regex = regex.replace('\\/', '/')
         
-        # Supprimer les délimiteurs PCRE si présents: /pattern/flags -> pattern
+        # Remove PCRE delimiters if present: /pattern/flags -> pattern
         if regex.startswith('/') and '/' in regex[1:]:
-            # Format: /regex/flags - extraire le contenu
             last_slash = regex.rfind('/')
             if last_slash > 0:
                 regex = regex[1:last_slash]
         
         # ===================================================================
-        # ETAPE 3 : Validation basique
+        # STEP 3 : Basic validation
         # ===================================================================
         
-        # Vérifier les parenthèses équilibrées
+        # Verify balanced parentheses
         open_count = regex.count('(') - regex.count('\\(')
         close_count = regex.count(')') - regex.count('\\)')
         
         if open_count != close_count:
-            # Log warning mais ne pas casser la regex
-            # On retourne quand même, Hyperscan rejettera si invalide
+            # Log warning but do not break regex
             pass
         
         return regex
 
     def _export_binary_config(self, firewall_rules: list[RuleVector], inspection_rules: list[RuleVector], hs_map, filename):
         """
-        Sérialise la structure logique en MessagePack pour le C++.
-        Contient : IP Src/Dst, Ports, Proto -> Lien vers ID Hyperscan (si patterns).
-        NOUVEAU: Inclut AUSSI les règles pures L3/L4 sans patterns.
+        Serializes logical structure in MessagePack for C++.
+        Contains: Src/Dst IPs, Ports, Proto -> Hyperscan ID link.
+        Includes pure L3/L4 rules without patterns.
         """
         path = os.path.join(self.output_dir, filename)
         
         data_to_serialize = []
         
-        # Traiter d'abord les règles firewall pures (pas de patterns)
+        # Process pure firewall rules first (no patterns)
         for r in firewall_rules:
             src_cidrs = [str(c) for c in r.src_ips.iter_cidrs()]
             dst_cidrs = [str(c) for c in r.dst_ips.iter_cidrs()]
@@ -611,7 +553,7 @@ class Exporter:
             for p in r.dst_ports.iter_cidrs():
                 if hasattr(p, 'first'): dst_ports.append([p.first, p.last])
             
-            # Règle firewall pure : hs_id=0
+            # Pure firewall rule: hs_id=0
             rule_obj = {
                 'id': r.id,
                 'proto': r.proto,
@@ -620,7 +562,7 @@ class Exporter:
                 'src_ports': src_ports,
                 'dst_ports': dst_ports,
                 'direction': r.direction,
-                'hs_id': 0,  # Pas de pattern
+                'hs_id': 0,  # No pattern
                 'atomic_ids': [],
                 'is_multi': False,
                 'is_or': False,
@@ -628,7 +570,7 @@ class Exporter:
             }
             data_to_serialize.append(rule_obj)
         
-        # Traiter ensuite les règles d'inspection avec patterns
+        # Process inspection rules with patterns
         for r in inspection_rules:
             src_cidrs = [str(c) for c in r.src_ips.iter_cidrs()]
             dst_cidrs = [str(c) for c in r.dst_ips.iter_cidrs()]
@@ -641,17 +583,17 @@ class Exporter:
             for p in r.dst_ports.iter_cidrs():
                 if hasattr(p, 'first'): dst_ports.append([p.first, p.last])
             
-            # Chercher dans hs_map (par rule ID)
+            # Lookup in hs_map (by rule ID)
             hs_data = hs_map.get(r.id)
             
             if hs_data:
-                # Règle AVEC patterns -> utiliser ses données Hyperscan
+                # Rule WITH patterns -> use Hyperscan data
                 hs_id = hs_data['hs_id']
                 atomic_ids = hs_data.get('atomic_ids', [hs_id])
                 is_multi = hs_data.get('is_multi', False)
                 is_or = hs_data.get('is_or', False)
             else:
-                # Règle sans patterns valides -> traiter comme L3/L4 pure
+                # Rule without valid patterns -> treat as pure L3/L4
                 hs_id = 0
                 atomic_ids = []
                 is_multi = False
@@ -677,4 +619,4 @@ class Exporter:
             packed = msgpack.packb(data_to_serialize)
             f.write(packed)
             
-        print(f"    -> Généré : {filename} ({len(packed)/1024:.2f} KB)")
+        print(f"    -> Generated : {filename} ({len(packed)/1024:.2f} KB)")

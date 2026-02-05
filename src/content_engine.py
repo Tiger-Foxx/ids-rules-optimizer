@@ -6,13 +6,13 @@ from .models import RuleVector, Pattern
 
 
 # =============================================================================
-# STRUCTURES DE DONNÉES POUR LA FACTORISATION TRIE
+# TRIE DATA STRUCTURES FOR PREFIX FACTORIZATION
 # =============================================================================
 
 class TrieNode:
     """
-    Nœud Trie pour la factorisation par préfixe commun.
-    Optimisé avec __slots__ pour réduire l'empreinte mémoire.
+    Trie node for common prefix factorization.
+    Optimized with __slots__ to reduce memory footprint.
     """
     __slots__ = ['children', 'is_end', 'pattern_keys']
     
@@ -23,63 +23,60 @@ class TrieNode:
 
 
 # =============================================================================
-# MOTEUR D'OPTIMISATION SÉMANTIQUE AVANCÉE
+# ADVANCED SEMANTIC OPTIMIZATION ENGINE
 # =============================================================================
 
 class ContentEngine:
     """
-    Moteur d'optimisation des règles de contenu (patterns) avec FACTORISATION TRIE.
+    Optimization engine for content patterns using TRIE FACTORIZATION.
     
-    STRATÉGIE D'OPTIMISATION SÉMANTIQUE (Recommandation Expert IA)
-    ==============================================================
+    SEMANTIC OPTIMIZATION STRATEGY
+    ==============================
     
-    L'agrégation contextuelle seule NE RÉDUIT PAS la complexité de l'automate
-    Hyperscan. Les expressions OR géantes (2991 IDs) maintiennent N automates
-    atomiques actifs → ZÉRO gain de performance réel.
+    Contextual aggregation alone does NOT reduce the complexity of the Hyperscan 
+    automaton. Giant OR expressions keep N atomic automata active, resulting in
+    zero real performance gain.
     
-    SOLUTION : Factorisation Lexicale Globale par Trie
-    --------------------------------------------------
+    SOLUTION: Global Lexical Factorization via Trie
+    ----------------------------------------------
     
-    Transformation : "GET /admin" + "GET /config" → "GET /(admin|config)"
+    Transformation: "GET /admin" + "GET /config" -> "GET /(admin|config)"
     
-    AVANT (2 patterns atomiques):
+    BEFORE (2 atomic patterns):
         Pattern 1: /GET \/admin/
         Pattern 2: /GET \/config/
-        → Hyperscan compile 2 automates distincts
+        -> Hyperscan compiles 2 distinct automata
     
-    APRÈS (1 pattern factorisé):
+    AFTER (1 factorized pattern):
         Pattern X: /GET \/(?:admin|config)/
-        → Hyperscan compile 1 automate avec alternation interne
-        → Réduction RÉELLE du travail de scan
+        -> Hyperscan compiles 1 automaton with internal alternation
+        -> Real reduction in scan workload
     
-    PIPELINE :
-    1. Extraction Globale : Tous les patterns uniques → normalisation
-    2. Ségrégation : Littéraux (candidats Trie) vs PCRE complexes
-    3. Factorisation Trie : Préfixe commun ≥4 chars, branching ≥2
-    4. Réinjection : Mise à jour des règles avec patterns factorisés
-    5. Agrégation Finale : Déduplication + agrégation contextuelle
+    PIPELINE:
+    1. Global Extraction: All unique patterns -> normalization
+    2. Segregation: Literals (Trie candidates) vs complex PCRE
+    3. Trie Factorization: Common prefix >= 4 chars, branching >= 2
+    4. Reinjection: Update rules with factorized patterns
+    5. Final Aggregation: Exact deduplication + contextual aggregation
     """
     
     def __init__(self):
-        # Heuristiques de performance (recommandation expert)
-        self.MIN_PREFIX_LEN = 4    # Longueur min du préfixe commun
-        self.MIN_BRANCHING_FACTOR = 2  # Nombre min de patterns à fusionner
+        # Performance heuristics
+        self.MIN_PREFIX_LEN = 4    # Min length of common prefix
+        self.MIN_BRANCHING_FACTOR = 2  # Min number of patterns to merge
 
     def _validate_regex_parentheses(self, regex: str) -> bool:
         """
-        Vérifie que les parenthèses sont équilibrées dans la regex.
-        
-        Gère les cas échappés : \\( et \\) ne comptent pas.
-        Retourne True si valide, False sinon.
+        Verify that parentheses are balanced in the regex.
+        Handles escaped cases: \\( and \\) are ignored.
         """
         depth = 0
         i = 0
         while i < len(regex):
             char = regex[i]
             
-            # Vérifier si c'est un caractère échappé
+            # Check for escaped characters
             if char == '\\' and i + 1 < len(regex):
-                # Skip le caractère échappé
                 i += 2
                 continue
             
@@ -88,59 +85,59 @@ class ContentEngine:
             elif char == ')':
                 depth -= 1
                 if depth < 0:
-                    return False  # Trop de parenthèses fermantes
+                    return False  # Too many closing parentheses
             
             i += 1
         
-        return depth == 0  # True si toutes les parenthèses sont fermées
+        return depth == 0
 
     def optimize(self, rules: List[RuleVector]) -> List[RuleVector]:
         """
-        Pipeline d'optimisation SANS fusion Trie (évite les faux positifs).
+        Optimization pipeline WITHOUT Trie merge (safety mode).
         
-        Conserve :
-        - Déduplication exacte des patterns identiques
-        - Agrégation par contexte réseau (IP/Port)
+        Preserves:
+        - Exact deduplication of identical patterns
+        - Network context aggregation (IP/Port)
         
-        Désactivé :
-        - Fusion Trie (cause des faux positifs par mélange de sémantiques)
+        Disabled:
+        - Trie merging (caused false positives due to semantic mixing)
         """
-        print(f"[*] Démarrage de l'Optimisation Sémantique (Mode Conservatif)...")
+        print(f"[*] Starting Semantic Optimization (Conservative Mode)...")
         
-        # Filtrer les règles avec patterns
+        # Filter rules with patterns
         rules_with_patterns = [r for r in rules if r.patterns]
-        print(f"    - Règles avec patterns : {len(rules_with_patterns)}")
+        print(f"    - Rules with patterns: {len(rules_with_patterns)}")
         
-        # Stats initiales
+        # Initial stats
         multi_content_rules = [r for r in rules_with_patterns if len(r.patterns) > 1]
-        print(f"    - Règles multi-content (AND logique) : {len(multi_content_rules)}")
+        print(f"    - Multi-content rules (logical AND): {len(multi_content_rules)}")
 
-        # Compter les patterns initiaux
+        # Count initial patterns
         initial_patterns = set()
         for r in rules_with_patterns:
             for p in r.patterns:
                 initial_patterns.add((p.string_val, str(p.modifiers)))
-        print(f"    - Patterns uniques avant déduplication : {len(initial_patterns)}")
+        print(f"    - Unique patterns before deduplication: {len(initial_patterns)}")
 
         # =================================================================
-        # FUSION TRIE DÉSACTIVÉE - Cause des faux positifs
+        # TRIE MERGE DISABLED - Avoids false positives
         # =================================================================
-        print(f"    [INFO] Fusion Trie DÉSACTIVÉE (évite les faux positifs)")
-        print(f"    [INFO] Seule la déduplication exacte est appliquée")
+        print(f"    [INFO] Trie Factorization DISABLED (safety)")
+        print(f"    [INFO] Exact deduplication applied")
 
         # =================================================================
-        # PHASE 1 : DÉDUPLICATION EXACTE
+        # PHASE 1: EXACT DEDUPLICATION
         # =================================================================
         deduplicated_rules = self._deduplicate_exact(rules_with_patterns)
-        print(f"    - Après déduplication exacte : {len(deduplicated_rules)}")
+        print(f"    - After exact deduplication: {len(deduplicated_rules)}")
 
         # =================================================================
-        # PHASE 2 : AGRÉGATION PAR CONTEXTE RÉSEAU
+        # PHASE 2: NETWORK CONTEXT AGGREGATION
         # =================================================================
         final_rules = self._aggregate_by_network_context(deduplicated_rules)
-        print(f"    - Règles finales (après agrégation contextuelle) : {len(final_rules)}")
+        print(f"    - Final rules (after contextual aggregation): {len(final_rules)}")
 
-        # Stats finales
+        # Final stats
         final_patterns = set()
         for r in final_rules:
             for p in r.patterns:
@@ -148,19 +145,19 @@ class ContentEngine:
         
         reduction = len(initial_patterns) - len(final_patterns)
         percent = (reduction / len(initial_patterns) * 100) if initial_patterns else 0
-        print(f"    >>> GAIN : {len(initial_patterns)} -> {len(final_patterns)} patterns uniques (-{percent:.1f}%)")
+        print(f"    >>> GAIN: {len(initial_patterns)} -> {len(final_patterns)} unique patterns (-{percent:.1f}%)")
 
         return final_rules
 
     # =========================================================================
-    # PHASE 1 & 2 : EXTRACTION ET SÉGRÉGATION
+    # PHASE 1 & 2: EXTRACTION AND SEGREGATION
     # =========================================================================
 
     def _extract_and_normalize_patterns(self, rules: List[RuleVector]) -> Dict[Tuple, dict]:
         """
-        Extrait et normalise tous les patterns atomiques de toutes les règles.
+        Extract and normalize all atomic patterns from all rules.
         
-        Retourne un dict {(string, is_regex, flags): pattern_info}
+        Returns a dict {(string, is_regex, flags): pattern_info}
         """
         patterns = {}
         
@@ -172,13 +169,13 @@ class ContentEngine:
                 if not p.string_val:
                     continue
                 
-                # Normalisation des flags
+                # Flag normalization
                 flags = ''
                 modifiers_str = str(p.modifiers).lower() if p.modifiers else ''
                 if 'nocase' in modifiers_str:
                     flags += 'i'
                 
-                # Clé unique stable (string, is_regex, flags)
+                # Stable unique key (string, is_regex, flags)
                 key = (p.string_val, p.is_regex, flags)
                 
                 if key not in patterns:
@@ -193,10 +190,10 @@ class ContentEngine:
 
     def _segregate_patterns(self, atomic_patterns: Dict[Tuple, dict]) -> Tuple[Dict, Dict]:
         """
-        Sépare les patterns littéraux (candidats Trie) des PCRE complexes.
+        Separate literal patterns (Trie candidates) from complex PCRE.
         
-        Seuls les littéraux (is_regex=False) sont candidats à la factorisation.
-        Les PCRE sont préservés tels quels.
+        Only literals (is_regex=False) are candidates for factorization.
+        PCRE are preserved as-is.
         """
         simple = {}
         complex_p = {}
@@ -210,16 +207,16 @@ class ContentEngine:
         return simple, complex_p
 
     # =========================================================================
-    # PHASE 3 : ALGORITHME DE FACTORISATION TRIE
+    # PHASE 3: TRIE FACTORIZATION ALGORITHM
     # =========================================================================
 
     def _factorize_patterns(self, simple_patterns: Dict[Tuple, dict]) -> Dict[Tuple, Pattern]:
         """
-        Groupe les patterns par flags et lance la factorisation Trie.
+        Groups patterns by flags and starts Trie factorization.
         
-        Retourne un mapping {original_key → fused_Pattern}
+        Returns a mapping {original_key -> fused_Pattern}
         """
-        # Grouper par flags (nocase vs case-sensitive)
+        # Group by flags (nocase vs case-sensitive)
         groups_by_flags = defaultdict(list)
         for key, p_obj in simple_patterns.items():
             groups_by_flags[p_obj['flags']].append(p_obj)
@@ -235,11 +232,11 @@ class ContentEngine:
     def _run_trie_factorization(self, patterns_list: List[dict], flags: str, 
                                   factorized_map: Dict[Tuple, Pattern]):
         """
-        Construction du Trie et factorisation par préfixe commun.
+        Trie construction and factorization search.
         """
         root = TrieNode()
 
-        # 1. Construction du Trie
+        # 1. Build Trie
         for p_obj in patterns_list:
             s = p_obj['string']
             node = root
@@ -248,45 +245,43 @@ class ContentEngine:
                 if char not in node.children:
                     node.children[char] = TrieNode()
                 node = node.children[char]
-                # Tracking des clés de patterns le long du chemin
+                # Track pattern keys along the path
                 node.pattern_keys.add(p_obj['key'])
             
             node.is_end = True
 
-        # 2. Traversée et Factorisation
+        # 2. Traverse and Factorize
         self._traverse_and_factorize(root, "", flags, factorized_map)
 
     def _traverse_and_factorize(self, node: TrieNode, current_prefix: str, 
                                   flags: str, factorized_map: Dict[Tuple, Pattern]):
         """
-        Parcours récursif du Trie pour identifier les points de factorisation.
+        Recursive Trie traversal to identify factorization points.
         
-        Condition de factorisation :
-        - Préfixe >= MIN_PREFIX_LEN caractères
-        - >= MIN_BRANCHING_FACTOR patterns passent par ce nœud
+        Factorization condition:
+        - Prefix >= MIN_PREFIX_LEN characters
+        - >= MIN_BRANCHING_FACTOR patterns pass through this node
         """
-        # Vérifier la condition de factorisation
+        # Check condition
         if (len(current_prefix) >= self.MIN_PREFIX_LEN and 
             len(node.pattern_keys) >= self.MIN_BRANCHING_FACTOR):
             
-            # FACTORISATION DÉTECTÉE !
+            # FACTORIZATION DETECTED!
             keys_to_factorize = node.pattern_keys.copy()
             
-            # 1. Collecter les suffixes restants
+            # 1. Collect remaining suffixes
             suffixes = []
             self._collect_suffixes(node, "", suffixes)
 
-            # 2. Construction de la Regex Factorisée
+            # 2. Build Factorized Regex
             prefix_escaped = re.escape(current_prefix)
             
-            # Gestion du suffixe vide (le préfixe est lui-même un pattern complet)
+            # Handle empty suffix (prefix itself is a pattern)
             prefix_is_pattern = "" in suffixes
             if prefix_is_pattern:
                 suffixes.remove("")
 
-            # Échappement et tri des suffixes (plus long d'abord pour matching gourmand)
-            # FILTRE CRITIQUE : Exclure les suffixes trop courts (< 15 chars)
-            # Les suffixes courts comme "-Agent:" matchent tout le trafic HTTP
+            # Filter and sort suffixes
             MIN_SUFFIX_LEN = 15
             escaped_suffixes = sorted(
                 list(set(re.escape(s) for s in suffixes if s and len(s) >= MIN_SUFFIX_LEN)), 
@@ -294,70 +289,58 @@ class ContentEngine:
                 reverse=True
             )
             
-            # Si pas assez de suffixes longs, abandonner cette factorisation
+            # If not enough long suffixes, abandon this branch
             if len(escaped_suffixes) < self.MIN_BRANCHING_FACTOR:
                 for char, child in node.children.items():
                     self._traverse_and_factorize(child, current_prefix + char, flags, factorized_map)
                 return
             
             # =================================================================
-            # CORRECTION ANTI-FAUX-POSITIFS : Ne JAMAIS générer (?:|...)
+            # ANTI-FALSE-POSITIVE CORRECTION: NEVER generate (?:|...)
             # =================================================================
-            # Le format (?:|alt1|alt2) permet de matcher juste le préfixe seul,
-            # ce qui crée des faux positifs massifs (ex: "User-Agent:" seul)
-            # 
-            # NOUVELLE STRATÉGIE :
-            # - Si prefix seul EST un pattern : NE PAS le factoriser, skip
-            # - Sinon : factoriser normalement avec (?:alt1|alt2)
-            
             if prefix_is_pattern:
-                # Le préfixe seul est un pattern → Dangereux de factoriser
-                # On abandonne cette factorisation pour éviter (?:|...)
+                # Prefix alone is a pattern -> Dangerous to factorize
                 for char, child in node.children.items():
                     self._traverse_and_factorize(child, current_prefix + char, flags, factorized_map)
                 return
             
-            # Construction de l'alternation SANS alternative vide
+            # Build alternation
             if escaped_suffixes:
                 alternation = "|".join(escaped_suffixes)
                 fused_regex = f"{prefix_escaped}(?:{alternation})"
             else:
-                # Pas de suffixes valides → pas de factorisation
                 return
 
             # =================================================================
-            # VALIDATION : Vérifier les parenthèses équilibrées
+            # VALIDATION: Check balanced parentheses
             # =================================================================
             if not self._validate_regex_parentheses(fused_regex):
-                # Pattern malformé ! On abandonne cette factorisation
-                # et on continue la descente pour factoriser plus bas
                 for char, child in node.children.items():
                     self._traverse_and_factorize(child, current_prefix + char, flags, factorized_map)
                 return
 
-            # Création du Pattern factorisé
+            # Create factorized Pattern
             fused_pattern = Pattern(
                 string_val=fused_regex,
-                is_regex=True,  # C'est maintenant une regex
+                is_regex=True,
                 modifiers={'nocase': 'true'} if 'i' in flags else {}
             )
             
-            # Mise à jour du mapping pour toutes les clés concernées
+            # Update mapping
             for key in keys_to_factorize:
                 if key not in factorized_map:
                     factorized_map[key] = fused_pattern
             
-            # Arrêt de la descente : ce sous-arbre est consommé
             return
 
-        # Descente récursive si pas factorisé
+        # Recursive descent
         for char, child in node.children.items():
             self._traverse_and_factorize(child, current_prefix + char, flags, factorized_map)
 
     def _collect_suffixes(self, node: TrieNode, current_suffix: str, suffixes: List[str]):
         """
-        Collecte récursive de tous les suffixes à partir d'un nœud.
-        Inclut les terminaisons internes (nœuds is_end au milieu du Trie).
+        Recursive collection of all suffixes from a node.
+        Includes internal terminals.
         """
         if node.is_end:
             suffixes.append(current_suffix)
@@ -366,13 +349,13 @@ class ContentEngine:
             self._collect_suffixes(child, current_suffix + char, suffixes)
 
     # =========================================================================
-    # PHASE 4 : RÉINJECTION
+    # PHASE 4: REINJECTION
     # =========================================================================
 
     def _reinject_patterns(self, rules: List[RuleVector], 
                             factorized_map: Dict[Tuple, Pattern]) -> List[RuleVector]:
         """
-        Remplace les patterns atomiques par leurs versions factorisées.
+        Replaces atomic patterns with their factorized versions.
         """
         updated_rules = []
         
@@ -383,25 +366,24 @@ class ContentEngine:
 
             new_patterns = []
             patterns_changed = False
-            seen_fused = set()  # Pour éviter les doublons de patterns factorisés
+            seen_fused = set()  # Avoid duplicates for factorized patterns
             
             for p in r.patterns:
                 if not p.string_val:
                     continue
 
-                # Reconstitution de la clé
+                # Reconstruct key
                 flags = ''
                 modifiers_str = str(p.modifiers).lower() if p.modifiers else ''
                 if 'nocase' in modifiers_str:
                     flags += 'i'
                 key = (p.string_val, p.is_regex, flags)
 
-                # Remplacement si factorisé
+                # Replace if factorized
                 if key in factorized_map:
                     fused = factorized_map[key]
                     fused_id = id(fused)
                     
-                    # Éviter les doublons (plusieurs patterns originaux → même factorisé)
                     if fused_id not in seen_fused:
                         new_patterns.append(fused)
                         seen_fused.add(fused_id)
@@ -411,7 +393,6 @@ class ContentEngine:
                     new_patterns.append(p)
             
             if patterns_changed:
-                # Construction de la nouvelle règle
                 new_rule = RuleVector(
                     id=r.id,
                     original_text=r.original_text + " [FACTORIZED]",
@@ -435,13 +416,13 @@ class ContentEngine:
         return updated_rules
 
     # =========================================================================
-    # PHASE 5 : DÉDUPLICATION ET AGRÉGATION
+    # PHASE 5: DEDUPLICATION AND AGGREGATION
     # =========================================================================
 
     def _deduplicate_exact(self, rules: List[RuleVector]) -> List[RuleVector]:
         """
-        Déduplication exacte des règles après factorisation.
-        Utilise le hash des objets Pattern pour comparaison.
+        Exact rule deduplication after factorization.
+        Uses Pattern object hashes for comparison.
         """
         groups = defaultdict(list)
         
@@ -451,11 +432,11 @@ class ContentEngine:
 
             k_dst_pt = tuple(sorted(str(c) for c in r.dst_ports.iter_cidrs()))
             
-            # Utilisation de frozenset sur les objets Pattern (hashables)
+            # Use frozenset on Pattern objects (hashable)
             try:
                 k_patterns = frozenset(r.patterns)
             except TypeError:
-                # Fallback si Pattern pas hashable
+                # Fallback if Pattern not hashable
                 k_patterns = frozenset(
                     (p.string_val, p.is_regex, tuple(sorted(p.modifiers.items())) if p.modifiers else ())
                     for p in r.patterns
@@ -475,8 +456,8 @@ class ContentEngine:
 
     def _merge_contexts(self, rules: List[RuleVector]) -> RuleVector:
         """
-        Fusionne N règles identiques (mêmes patterns) en une seule.
-        Fusionne les IPs sources/destinations (union mathématique).
+        Merges N identical rules (same patterns) into a single one.
+        Unions source and destination IPs.
         """
         base = rules[0]
         
@@ -508,56 +489,49 @@ class ContentEngine:
 
     def _aggregate_by_network_context(self, rules: List[RuleVector]) -> List[RuleVector]:
         """
-        AGRÉGATION NIVEAU 1 : DÉSACTIVÉE pour les patterns différents.
+        LEVEL 1 AGGREGATION: DISABLED for different patterns.
         
-        ANALYSE DU PROBLÈME
-        ===================
-        Fusionner des règles avec patterns DIFFÉRENTS en logique OR détruit
-        la sémantique originale des règles Snort.
-        
-        Exemple:
-        - Règle A: Détecte "Netscape overflow" (pattern binaire spécifique)
-        - Règle B: Détecte "SQL injection" (pattern "SELECT")
-        - Règle C: Détecte "XSS" (pattern "<script>")
-        
-        Agrégation OR → (A | B | C) = "si UN pattern matche, DROP"
-        
-        Problèmes:
-        1. Perte de traçabilité (quelle menace a été détectée ?)
-        2. Faux positifs si un pattern est trop générique
-        3. Impossible de tuner une règle sans affecter les autres
-        
-        SOLUTION RETENUE
+        PROBLEM ANALYSIS
         ================
-        - Déduplication exacte : règles avec MÊMES patterns → fusionner IPs ✅
-        - Fusion IP dans phase 3 (Hypercube Convergence) : OK ✅
-        - Agrégation de patterns différents : DÉSACTIVÉE ❌
+        Merging rules with DIFFERENT patterns into an OR logic destroys
+        the original Snort rule semantics.
         
-        La complexité O(N) est gérée par le CompositeRuleIndex qui pré-filtre
-        par (IP, Port) en O(1). Le nombre de règles n'impacte pas les perfs runtime.
+        Example:
+        - Rule A: Detects "Netscape overflow" (specific binary pattern)
+        - Rule B: Detects "SQL injection" ("SELECT" pattern)
+        - Rule C: Detects "XSS" ("<script>" pattern)
         
-        GAIN PRÉSERVÉ
-        =============
-        - Phase 3 (Fusion IP) : -57 règles
-        - Déduplication exacte : -770 règles  
-        - Factorisation Trie : -44% patterns atomiques
+        OR aggregation -> (A | B | C) = "if ANY pattern matches, DROP"
+        
+        Issues:
+        1. Loss of traceability
+        2. False positives if a pattern is too generic
+        3. Impossible to tune one rule without affecting others
+        
+        RETAINED SOLUTION
+        =================
+        - Exact deduplication: same patterns -> merge IPs 
+        - IP fusion in Phase 3 (Hypercube Convergence): OK 
+        - Aggregating different patterns: DISABLED 
+        
+        Runtime performance is maintained by CompositeRuleIndex (O(1) pre-filtering).
         """
-        # Retourner les règles sans agrégation de patterns différents
-        # La déduplication exacte (mêmes patterns) est déjà faite dans _deduplicate_exact()
-        print(f"    [INFO] Agrégation patterns différents DÉSACTIVÉE (préservation sémantique)")
-        print(f"    [INFO] Déduplication exacte + Fusion IP restent actives")
+        # Return rules without aggregating different patterns
+        # Exact deduplication is already done in _deduplicate_exact()
+        print(f"    [INFO] Aggregation of different patterns DISABLED (semantic preservation)")
+        print(f"    [INFO] Exact deduplication + IP Fusion remain active")
         return rules
 
     def _merge_rules_with_different_patterns(self, rules: List[RuleVector]) -> RuleVector:
         """
-        FONCTION DÉSACTIVÉE - Préservation sémantique.
+        DISABLED FUNCTION - Semantic preservation.
         
-        Cette fonction fusionnait des règles avec patterns DIFFÉRENTS en OR.
-        Problème : cela détruit la sémantique originale des règles Snort.
+        This function merged rules with DIFFERENT patterns into OR logic.
+        Issue: this destroys the original Snort rule semantics.
         
-        Gardée pour référence historique, mais ne doit plus être appelée.
+        Kept for historical reference.
         """
         raise NotImplementedError(
-            "Fusion de patterns différents désactivée. "
-            "Utilisez _deduplicate_exact() pour fusionner règles avec mêmes patterns."
+            "Merging of different patterns disabled. "
+            "Use _deduplicate_exact() to merge rules with identical patterns."
         )

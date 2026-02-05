@@ -5,17 +5,17 @@ from .models import RuleVector, Pattern
 class SnortParser:
     def __init__(self, test_mode=False):
         """
-        @param test_mode: Si True, $EXTERNAL_NET = any (pour tests internes CloudLab)
+        @param test_mode: If True, $EXTERNAL_NET = any (for internal testing)
         """
         self.UNIVERSE = netaddr.IPSet(['0.0.0.0/0'])
         
-        # Variables standard
+        # Standard variables
         home_net = netaddr.IPSet(['192.168.0.0/16', '10.0.0.0/8'])
         
-        # En mode test, EXTERNAL_NET = any pour matcher les attaques internes
+        # In test mode, EXTERNAL_NET = any to match internal attacks
         if test_mode:
             external_net = self.UNIVERSE
-            print("[PARSER] TEST MODE: $EXTERNAL_NET = any (pour tests internes)")
+            print("[PARSER] TEST MODE: $EXTERNAL_NET = any (for internal tests)")
         else:
             external_net = self.UNIVERSE - home_net
 
@@ -167,7 +167,7 @@ class SnortParser:
                 val = ""
 
             if key == "content":
-                # Extraire UNIQUEMENT ce qui est entre guillemets
+                # Extract ONLY what is between quotes
                 clean_val = self._extract_quoted_value(val)
                 if clean_val is not None:
                     rule.patterns.append(Pattern(string_val=clean_val))
@@ -175,7 +175,7 @@ class SnortParser:
                 clean_val = self._extract_quoted_value(val)
                 if clean_val is not None:
                     rule.patterns.append(Pattern(string_val=clean_val, is_regex=True))
-            # --- MODIFIERS DE CONTENT (s'appliquent au dernier pattern) ---
+            # --- CONTENT MODIFIERS (apply to previous pattern) ---
             elif key == "nocase":
                 if rule.patterns:
                     rule.patterns[-1].modifiers['nocase'] = True
@@ -202,23 +202,21 @@ class SnortParser:
                 try: rule.id = int(val)
                 except: pass
             
-            # --- NOUVEAU : EXTRACTION FINE DU PROTOCOLE ---
+            # --- PROTOCOL-SPECIFIC FIELDS ---
             elif key == "flags":
-                # ex: flags:S; ou flags:A,12;
+                # e.g.: flags:S; or flags:A,12;
                 rule.tcp_flags = val
             elif key == "itype":
                 rule.icmp_type = val
             elif key == "icode":
                 rule.icmp_code = val
             elif key == "icmp_id":
-                # On le stocke dans icmp_type pour la signature, ou un champ dédié
-                # Pour l'instant, on ne le met pas en signature principale car iptables gère mal l'ID
-                # Mais on peut le garder pour éviter la fusion abusive
+                # Stored for hash stability but not directly offloaded to iptables
                 pass
 
     def _extract_quoted_value(self, val):
         """
-        Extrait uniquement la valeur entre guillemets.
+        Extracts only the value between quotes.
         Ex: '"hello",depth 16' -> 'hello'
         Ex: '"test|00|data"' -> 'test|00|data'
         """
@@ -227,18 +225,18 @@ class SnortParser:
         
         val = val.strip()
         if not val.startswith('"'):
-            return val  # Pas de guillemet, retourner tel quel
+            return val  # No quotes, return as is
         
-        # Trouver le guillemet fermant (en gérant les échappements)
+        # Find closing quote supporting escaped characters
         i = 1
         result = []
         while i < len(val):
             if val[i] == '\\' and i + 1 < len(val):
-                # Caractère échappé
+                # Escaped character
                 result.append(val[i:i+2])
                 i += 2
             elif val[i] == '"':
-                # Guillemet fermant trouvé
+                # Closing quote found
                 break
             else:
                 result.append(val[i])

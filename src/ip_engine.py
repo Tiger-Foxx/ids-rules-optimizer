@@ -8,20 +8,19 @@ class IPEngine:
         self.inspection_rules = []
 
     def optimize(self, rules: list[RuleVector]):
-        print(f"[*] Démarrage de l'optimisation 'Hypercube Convergence' sur {len(rules)} règles...")
+        print(f"[*] Starting 'Hypercube Convergence' optimization on {len(rules)} rules...")
         
         pure_candidates = [r for r in rules if r.is_pure_firewall()]
         deep_candidates = [r for r in rules if not r.is_pure_firewall()]
         
-        # --- AUDIT DE SÉCURITÉ ---
-        print(f"\n[AUDIT] Vérification des {len(pure_candidates)} règles classées 'Firewall Pur'...")
+        # --- SECURITY AUDIT ---
+        print(f"\n[AUDIT] Checking {len(pure_candidates)} 'Pure Firewall' rules...")
         count_flags = sum(1 for r in pure_candidates if r.tcp_flags or r.icmp_type)
         if count_flags > 0:
-            print(f"    - {count_flags} règles ont des contraintes protocolaires (flags/itype).")
-            print(f"    - Sécurité : ACTIVE (Prise en compte dans la signature de fusion).")
+            print(f"    - {count_flags} rules have protocol constraints (flags/itype).")
+            print(f"    - Security : ACTIVE (Captured in fusion signature).")
         # -------------------------
 
-        # On traite séparément car les règles d'inspection ont des contraintes de pattern strictes
         self.firewall_rules = self._run_optimization_loop(pure_candidates, is_pure=True)
         self.inspection_rules = self._run_optimization_loop(deep_candidates, is_pure=False)
         
@@ -29,8 +28,7 @@ class IPEngine:
 
     def _run_optimization_loop(self, rules: list[RuleVector], is_pure: bool) -> list[RuleVector]:
         """
-        Exécute la pipeline en boucle jusqu'à stabilité (Point Fixe).
-        Garantit la compression maximale possible.
+        Loop until fix point.
         """
         if not rules: return []
 
@@ -41,62 +39,54 @@ class IPEngine:
             start_count = len(current_rules)
             iteration += 1
             
-            # Pipeline de réduction dimensionnelle
-            # L'ordre Src -> Dst -> Ports est heuristiquement le meilleur
+            # Dimensional Reduction Pipeline
+            # Order Src -> Dst -> Ports is heuristically optimal/
             
-            # 1. Fusion des Sources
+            # 1. Merge Sources
             current_rules = self._merge_generic(current_rules, target='src_ip', is_pure=is_pure)
             
-            # 2. Fusion des Destinations
+            # 2. Merge Destinations
             current_rules = self._merge_generic(current_rules, target='dst_ip', is_pure=is_pure)
             
-            # 3. Fusion des Ports Destination (Services)
+            # 3. Merge Destination Ports (Services)
             current_rules = self._merge_generic(current_rules, target='dst_port', is_pure=is_pure)
 
-            # 4. Fusion des Ports Sources
+            # 4. Merge Source Ports
             current_rules = self._merge_generic(current_rules, target='src_port', is_pure=is_pure)
             
             end_count = len(current_rules)
             
-            # Condition d'arrêt : Si le nombre de règles ne bouge plus, on a atteint l'optimum.
             if end_count == start_count:
                 break
                 
         prefix = "FW" if is_pure else "IPS"
-        print(f"    [{prefix}] Convergence atteinte en {iteration} itérations : {len(rules)} -> {len(current_rules)} règles.")
+        print(f"    [{prefix}] Convergence reached in {iteration} iterations : {len(rules)} -> {len(current_rules)} rules.")
         return current_rules
 
     def _merge_generic(self, rules: list[RuleVector], target: str, is_pure: bool):
         """
-        Algorithme de fusion générique par dimension cible.
+        Generic merging algorithm by target dimension.
         """
         groups = defaultdict(list)
         
         for r in rules:
-            # Création des clés de hachage stables
             k_src_ip = tuple(sorted(r.src_ips.iter_cidrs()))
             k_dst_ip = tuple(sorted(r.dst_ips.iter_cidrs()))
             k_src_pt = tuple(sorted(r.src_ports.iter_cidrs()))
             k_dst_pt = tuple(sorted(r.dst_ports.iter_cidrs()))
             k_patterns = tuple(r.patterns) if not is_pure else None
             
-            # --- SECURITE CRITIQUE : INTEGRATION DES FLAGS ---
-            # Si on oublie ça, on fusionne SYN avec tout le reste !
+            # --- CRITICAL SECURITY : FLAGS INTEGRATION ---
             proto_sig = (r.tcp_flags, r.icmp_type, r.icmp_code)
 
-            # Construction de la signature (Invariant)
-            # On exclut de la signature UNIQUEMENT ce qu'on veut fusionner
+            # Signature Construction (Invariant)
             if target == 'src_ip':
-                # Invariant = Tout sauf Src IP
                 sig = (r.proto, proto_sig, k_dst_ip, k_src_pt, k_dst_pt, r.direction, r.action, r.established, k_patterns)
             elif target == 'dst_ip':
-                # Invariant = Tout sauf Dst IP
                 sig = (r.proto, proto_sig, k_src_ip, k_src_pt, k_dst_pt, r.direction, r.action, r.established, k_patterns)
             elif target == 'dst_port':
-                # Invariant = Tout sauf Dst Port
                 sig = (r.proto, proto_sig, k_src_ip, k_dst_ip, k_src_pt, r.direction, r.action, r.established, k_patterns)
             elif target == 'src_port':
-                # Invariant = Tout sauf Src Port
                 sig = (r.proto, proto_sig, k_src_ip, k_dst_ip, k_dst_pt, r.direction, r.action, r.established, k_patterns)
             else:
                 raise ValueError(f"Unknown target {target}")
@@ -111,20 +101,20 @@ class IPEngine:
 
             base = group[0]
             
-            # Copies pour éviter les effets de bord
+            # Use copies to avoid side effects
             new_src_ips = netaddr.IPSet(base.src_ips)
             new_dst_ips = netaddr.IPSet(base.dst_ips)
             new_src_ports = netaddr.IPSet(base.src_ports)
             new_dst_ports = netaddr.IPSet(base.dst_ports)
 
-            # Fusion mathématique ciblée
+            # Mathematical targeted fusion
             for r in group[1:]:
                 if target == 'src_ip': new_src_ips.update(r.src_ips)
                 elif target == 'dst_ip': new_dst_ips.update(r.dst_ips)
                 elif target == 'src_port': new_src_ports.update(r.src_ports)
                 elif target == 'dst_port': new_dst_ports.update(r.dst_ports)
 
-            # Métadonnées
+            # Metadata
             new_text = f"FUSED {target.upper()} ({len(group)})"
             if is_pure: new_text += " FW"
 
@@ -138,7 +128,7 @@ class IPEngine:
                 dst_ports=new_dst_ports,
                 direction=base.direction,
                 established=base.established,
-                tcp_flags=base.tcp_flags, # Important de garder les flags
+                tcp_flags=base.tcp_flags, # Important to preserve flags
                 icmp_type=base.icmp_type,
                 icmp_code=base.icmp_code,
                 action=base.action,
