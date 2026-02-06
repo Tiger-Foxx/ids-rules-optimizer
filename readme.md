@@ -1,4 +1,4 @@
-# FoxOptimizer
+# Optimizer
 
 ![High-Level Architecture](illustrations/High-Level%20Architecture.jpg)
 
