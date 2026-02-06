@@ -1,5 +1,7 @@
 # FoxOptimizer
 
+![High-Level Architecture](illustrations/High-Level%20Architecture.jpg)
+
 **Role**: Static Analysis & Compilation Toolchain for Network Security Rules.  
 **Language**: Python 3  
 **Input**: Snort/Suricata Rule Files (`.rules`)  
@@ -8,6 +10,8 @@
 ---
 
 ## 1. Project Layout
+
+![Optimizer Pipeline](illustrations/Optimizer.jpg)
 
 ```
 optimizer/
